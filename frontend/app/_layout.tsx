@@ -1,9 +1,24 @@
 import { Tabs } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
+import { useFonts } from "expo-font";
+import { View, ActivityIndicator } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 export default function RootLayout() {
+  // Preload the Ionicons font to avoid "Font file for ionicons is empty" on Expo Go.
+  const [loaded] = useFonts({
+    ...Ionicons.font,
+  });
+
+  if (!loaded) {
+    return (
+      <View style={{ flex: 1, backgroundColor: "#0c0c0c", alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator size="large" color="#FF1F1F" />
+      </View>
+    );
+  }
+
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />

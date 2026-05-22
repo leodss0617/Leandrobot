@@ -38,59 +38,92 @@ const INJECTED_SCRAPER = `
     if (n === 0) return "white";
     return (n >= 1 && n <= 7) ? "red" : "black";
   }
-  function findTimeNear(el) {
-    var cur = el;
+  var TIME_RE_EXACT = /^([01]?\\d|2[0-3]):([0-5]\\d)(?::([0-5]\\d))?$/;
+  function isLeaf(el) { return !el.children || el.children.length === 0; }
+  // Encontra um horario HH:MM proximo do elemento do numero, varrendo os
+  // descendentes de cada ancestral ate uma profundidade limitada e escolhendo
+  // o mais proximo visualmente.
+  function findTimeNear(numEl) {
+    var nr = numEl.getBoundingClientRect();
+    var ncx = nr.left + nr.width / 2;
+    var ncy = nr.top + nr.height / 2;
+    var ancestor = numEl.parentElement;
     var depth = 0;
-    while (cur && depth < 6) {
-      var t = (cur.textContent || "").match(/\\b([01]?\\d|2[0-3]):([0-5]\\d)(?::([0-5]\\d))?\\b/);
-      if (t) {
-        return { time: t[1].padStart(2,"0") + ":" + t[2], seconds: t[3] || null };
+    var best = null;
+    var bestDist = Infinity;
+    while (ancestor && depth < 5) {
+      var descs = ancestor.querySelectorAll('*');
+      for (var j = 0; j < descs.length && j < 800; j++) {
+        var d = descs[j];
+        if (!isLeaf(d)) continue;
+        var t = (d.textContent || '').trim();
+        var m = t.match(TIME_RE_EXACT);
+        if (!m) continue;
+        var dr = d.getBoundingClientRect();
+        if (dr.width === 0 || dr.height === 0) continue;
+        var dcx = dr.left + dr.width / 2;
+        var dcy = dr.top + dr.height / 2;
+        var dx = Math.abs(dcx - ncx);
+        var dy = Math.abs(dcy - ncy);
+        if (dx > 120 || dy > 120) continue;
+        var dist = dx + dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { time: m[1].padStart(2, '0') + ':' + m[2], seconds: m[3] || null };
+        }
       }
-      cur = cur.parentElement;
+      if (best) return best;
+      ancestor = ancestor.parentElement;
       depth++;
     }
-    return null;
+    return best;
   }
   function isVisible(el) {
     var s = window.getComputedStyle(el);
-    if (s.display === "none" || s.visibility === "hidden" || parseFloat(s.opacity) < 0.1) return false;
+    if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.1) return false;
     var r = el.getBoundingClientRect();
-    if (r.width < 14 || r.height < 14 || r.width > 120 || r.height > 120) return false;
+    if (r.width < 12 || r.height < 12 || r.width > 140 || r.height > 140) return false;
     var ratio = r.width / Math.max(r.height, 1);
-    if (ratio < 0.45 || ratio > 2.2) return false;
+    if (ratio < 0.35 || ratio > 2.8) return false;
     return true;
   }
   function isUiNode(el) {
     var p = el;
-    while (p) {
-      var id = (p.id || "") + " " + (p.className || "");
-      if (typeof id === "string" && /bdp-|coletor-overlay/.test(id)) return true;
+    var depth = 0;
+    while (p && depth < 10) {
+      var id = (p.id || '') + ' ' + (typeof p.className === 'string' ? p.className : '');
+      if (/bdp-|coletor-overlay/.test(id)) return true;
       p = p.parentElement;
+      depth++;
     }
     return false;
   }
   try {
     var NUM_RE = /^(0|[1-9]|1[0-4])$/;
-    var nodes = document.querySelectorAll("div, span, li, td, a, button, p");
+    var nodes = document.querySelectorAll('div, span, li, td, a, button, p, b, strong, i');
     var seen = new Map();
     var results = [];
     var scanned = 0;
+    var numCandidates = 0;
+    var withTime = 0;
     for (var i = 0; i < nodes.length; i++) {
-      if (scanned > 50000) break;
+      if (scanned > 80000) break;
       scanned++;
       var el = nodes[i];
-      if (el.children && el.children.length > 2) continue;
+      if (!isLeaf(el)) continue;
       if (isUiNode(el)) continue;
-      var text = (el.textContent || "").trim();
+      var text = (el.textContent || '').trim();
       if (text.length > 2 || !NUM_RE.test(text)) continue;
       if (!isVisible(el)) continue;
+      numCandidates++;
       var n = parseInt(text, 10);
       var tAnchor = findTimeNear(el);
       if (!tAnchor) continue;
+      withTime++;
       var r = el.getBoundingClientRect();
       var cx = Math.round(r.left + r.width / 2);
       var cy = Math.round(r.top + r.height / 2);
-      var key = n + "|" + tAnchor.time + "|" + (tAnchor.seconds||"") + "|" + Math.round(cy/20) + "|" + Math.round(cx/20);
+      var key = n + '|' + tAnchor.time + '|' + (tAnchor.seconds || '') + '|' + Math.round(cy / 20) + '|' + Math.round(cx / 20);
       if (seen.has(key)) continue;
       seen.set(key, true);
       results.push({
@@ -108,10 +141,19 @@ const INJECTED_SCRAPER = `
       return b._cx - a._cx;
     });
     results = results.map(function (r) { delete r._cx; delete r._cy; return r; });
-    var payload = { type: "ROUNDS", rounds: results };
+    var payload = {
+      type: 'ROUNDS',
+      rounds: results,
+      diag: {
+        url: location.href,
+        scanned: scanned,
+        numCandidates: numCandidates,
+        withTime: withTime,
+      },
+    };
     window.ReactNativeWebView.postMessage(JSON.stringify(payload));
   } catch (err) {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: "ERROR", message: String(err && err.message || err) }));
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ERROR', message: String(err && err.message || err) }));
   }
   true;
 })();
@@ -139,12 +181,22 @@ export default function CaptureScreen() {
         }
         if (data.type !== "ROUNDS") return;
         const rounds = data.rounds || [];
+        const diag = data.diag || {};
         if (rounds.length === 0) {
           setCapturing(false);
-          setLastResult("Nenhuma rodada detectada na página.");
+          setLastResult(
+            `Nenhuma rodada detectada. Candidatos: ${diag.numCandidates ?? 0} · com horário: ${diag.withTime ?? 0}`,
+          );
           Alert.alert(
             "Sem rodadas",
-            "Não consegui detectar rodadas nesta tela. Role até a área do histórico de Double e tente novamente.",
+            `Não consegui detectar rodadas nesta tela.\n\n` +
+              `🔍 Diagnóstico:\n` +
+              `• Números 0-14 encontrados: ${diag.numCandidates ?? 0}\n` +
+              `• Com horário próximo: ${diag.withTime ?? 0}\n\n` +
+              `👉 Dicas:\n` +
+              `• Aguarde a página carregar totalmente\n` +
+              `• Role até a grade do histórico ficar visível\n` +
+              `• Tente fazer zoom out (pinçar) para mostrar mais rodadas`,
           );
           return;
         }
