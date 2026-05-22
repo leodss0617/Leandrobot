@@ -24,7 +24,7 @@ api_router = APIRouter(prefix="/api")
 
 
 # ---------------- Models ----------------
-SourceLiteral = Literal["tipminer", "megatroia", "manual"]
+SourceLiteral = Literal["tipminer", "megatroia", "blaze", "manual"]
 ColorLiteral = Literal["red", "black", "white"]
 
 
@@ -502,6 +502,162 @@ class SimulateResult(BaseModel):
     misses: int
     hit_rate_pct: float
     by_color: dict
+
+
+# ---------------- Rules Engine ----------------
+class RuleCondition(BaseModel):
+    # type: "streak" | "after_color" | "gap_white" | "last_n_pattern"
+    type: str
+    color: Optional[ColorLiteral] = None
+    op: Optional[str] = None  # ">=", "==", "<="
+    value: Optional[int] = None
+    pattern: Optional[List[ColorLiteral]] = None  # for last_n_pattern
+
+
+class RuleAction(BaseModel):
+    color: ColorLiteral
+    gales: int = 0
+    note: Optional[str] = None
+
+
+class RuleIn(BaseModel):
+    name: str
+    enabled: bool = True
+    conditions: List[RuleCondition]
+    action: RuleAction
+    priority: int = 0
+
+
+class Rule(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    enabled: bool = True
+    conditions: List[RuleCondition]
+    action: RuleAction
+    priority: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RuleMatch(BaseModel):
+    matched: bool
+    rule: Optional[Rule] = None
+    reason: Optional[str] = None
+
+
+def _eval_rule(rule: Rule, colors_newest_first: List[str]) -> bool:
+    """Avalia se a regra casa contra o estado atual (newest first)."""
+    if not colors_newest_first:
+        return False
+    last = colors_newest_first[0]
+    # Computa streak
+    streak_color = last
+    streak_len = 0
+    for c in colors_newest_first:
+        if c == streak_color:
+            streak_len += 1
+        else:
+            break
+    # Computa gap branco (rodadas desde o ultimo branco)
+    gap_white = None
+    for i, c in enumerate(colors_newest_first):
+        if c == "white":
+            gap_white = i
+            break
+    if gap_white is None:
+        gap_white = len(colors_newest_first)  # nunca apareceu no histórico atual
+
+    def cmp(actual: int, op: str, target: int) -> bool:
+        if op == ">=":
+            return actual >= target
+        if op == "<=":
+            return actual <= target
+        if op == "==":
+            return actual == target
+        if op == ">":
+            return actual > target
+        if op == "<":
+            return actual < target
+        return False
+
+    for cond in rule.conditions:
+        t = cond.type
+        if t == "streak":
+            if not cond.color or not cond.op or cond.value is None:
+                return False
+            if streak_color != cond.color:
+                return False
+            if not cmp(streak_len, cond.op, cond.value):
+                return False
+        elif t == "after_color":
+            if not cond.color or last != cond.color:
+                return False
+        elif t == "gap_white":
+            if not cond.op or cond.value is None:
+                return False
+            if not cmp(gap_white, cond.op, cond.value):
+                return False
+        elif t == "last_n_pattern":
+            if not cond.pattern:
+                return False
+            if len(colors_newest_first) < len(cond.pattern):
+                return False
+            # pattern is given newest-first
+            for i, p in enumerate(cond.pattern):
+                if colors_newest_first[i] != p:
+                    return False
+        else:
+            return False
+    return True
+
+
+@api_router.post("/rules", response_model=Rule)
+async def create_rule(r: RuleIn):
+    obj = Rule(**r.model_dump())
+    await db.rules.insert_one(obj.model_dump())
+    return obj
+
+
+@api_router.get("/rules", response_model=List[Rule])
+async def list_rules():
+    docs = await db.rules.find({}, {"_id": 0}).sort("priority", -1).to_list(length=500)
+    return [Rule(**d) for d in docs]
+
+
+@api_router.put("/rules/{rule_id}", response_model=Rule)
+async def update_rule(rule_id: str, r: RuleIn):
+    existing = await db.rules.find_one({"id": rule_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    updated = {**existing, **r.model_dump()}
+    updated["id"] = rule_id
+    await db.rules.replace_one({"id": rule_id}, updated)
+    return Rule(**updated)
+
+
+@api_router.delete("/rules/{rule_id}")
+async def delete_rule(rule_id: str):
+    res = await db.rules.delete_one({"id": rule_id})
+    return {"deleted": res.deleted_count}
+
+
+@api_router.get("/rules/evaluate", response_model=RuleMatch)
+async def evaluate_rules(source: Optional[SourceLiteral] = None, window: int = 30):
+    q: dict = {}
+    if source:
+        q["source"] = source
+    window = max(5, min(window, 200))
+    cursor = db.rounds.find(q, {"_id": 0}).sort("captured_at", -1).limit(window)
+    rounds_docs = await cursor.to_list(length=window)
+    colors = [d["color"] for d in rounds_docs]  # newest first
+    if not colors:
+        return RuleMatch(matched=False, reason="Sem rodadas no histórico.")
+
+    rules_docs = await db.rules.find({"enabled": True}, {"_id": 0}).sort("priority", -1).to_list(length=500)
+    for rd in rules_docs:
+        rule = Rule(**rd)
+        if _eval_rule(rule, colors):
+            return RuleMatch(matched=True, rule=rule, reason=f"Regra '{rule.name}' casou.")
+    return RuleMatch(matched=False, reason="Nenhuma regra ativa casou com o estado atual.")
 
 
 @api_router.get("/simulate", response_model=SimulateResult)

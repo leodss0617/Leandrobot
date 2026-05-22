@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Alert,
   Platform,
   Linking,
+  Switch,
 } from "react-native";
 import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -25,6 +26,12 @@ const SITES: { key: SourceType; label: string; url: string; emoji: string }[] = 
     label: "Mega Tróia",
     url: "https://megatroia.com.br/",
     emoji: "🔥",
+  },
+  {
+    key: "blaze" as SourceType,
+    label: "Blaze",
+    url: "https://blaze.bet.br/pt/games/double",
+    emoji: "🅱️",
   },
 ];
 
@@ -159,16 +166,37 @@ export default function CaptureScreen() {
   const [capturing, setCapturing] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [autoCollect, setAutoCollect] = useState(false);
+  const [lastAutoAt, setLastAutoAt] = useState<number | null>(null);
+  const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const current = SITES.find((s) => s.key === activeSite)!;
 
+  // Auto-coleta: a cada 30s injeta o scraper sem mostrar alertas
+  useEffect(() => {
+    if (autoRef.current) {
+      clearInterval(autoRef.current);
+      autoRef.current = null;
+    }
+    if (autoCollect && Platform.OS !== "web") {
+      autoRef.current = setInterval(() => {
+        webRef.current?.injectJavaScript(INJECTED_SCRAPER);
+        setLastAutoAt(Date.now());
+      }, 30000);
+    }
+    return () => {
+      if (autoRef.current) clearInterval(autoRef.current);
+    };
+  }, [autoCollect]);
+
   const onMessage = useCallback(
     async (event: { nativeEvent: { data: string } }) => {
+      const isAuto = autoCollect;
       try {
         const data = JSON.parse(event.nativeEvent.data);
         if (data.type === "ERROR") {
           setCapturing(false);
-          Alert.alert("Erro na coleta", data.message);
+          if (!isAuto) Alert.alert("Erro na coleta", data.message);
           return;
         }
         if (data.type !== "ROUNDS") return;
@@ -179,34 +207,31 @@ export default function CaptureScreen() {
           setLastResult(
             `Nenhuma rodada detectada. Candidatos: ${diag.numCandidates ?? 0} · com horário: ${diag.withTime ?? 0}`,
           );
-          Alert.alert(
-            "Sem rodadas",
-            `Não consegui detectar rodadas nesta tela.\n\n` +
-              `🔍 Diagnóstico:\n` +
-              `• Números 0-14 encontrados: ${diag.numCandidates ?? 0}\n` +
-              `• Com horário próximo: ${diag.withTime ?? 0}\n\n` +
-              `👉 Dicas:\n` +
-              `• Aguarde a página carregar totalmente\n` +
-              `• Role até a grade do histórico ficar visível\n` +
-              `• Tente fazer zoom out (pinçar) para mostrar mais rodadas`,
-          );
+          if (!isAuto) {
+            Alert.alert(
+              "Sem rodadas",
+              `Não consegui detectar rodadas nesta tela.\n\n🔍 Candidatos: ${diag.numCandidates ?? 0} · Com horário: ${diag.withTime ?? 0}\n\n👉 Aguarde a página carregar e role até a grade do histórico.`,
+            );
+          }
           return;
         }
         const res = await postBulkRounds(activeSite, rounds);
         setCapturing(false);
         setLastResult(
-          `✓ ${res.inserted} novas · ${res.duplicates} repetidas · ${res.total} total`,
+          `✓ ${res.inserted} novas · ${res.duplicates} repetidas · ${res.total} total${isAuto ? " (auto)" : ""}`,
         );
-        Alert.alert(
-          "Coleta concluída",
-          `Detectadas: ${rounds.length}\nNovas salvas: ${res.inserted}\nDuplicadas: ${res.duplicates}\nHistórico total: ${res.total}`,
-        );
+        if (!isAuto) {
+          Alert.alert(
+            "Coleta concluída",
+            `Detectadas: ${rounds.length}\nNovas salvas: ${res.inserted}\nDuplicadas: ${res.duplicates}\nHistórico total: ${res.total}`,
+          );
+        }
       } catch (e: any) {
         setCapturing(false);
-        Alert.alert("Erro", e?.message || "Falha ao processar rodadas");
+        if (!isAuto) Alert.alert("Erro", e?.message || "Falha ao processar rodadas");
       }
     },
-    [activeSite],
+    [activeSite, autoCollect],
   );
 
   const handleCapture = () => {
@@ -258,14 +283,32 @@ export default function CaptureScreen() {
           <Text style={styles.siteToggleText} numberOfLines={1}>{current.label}</Text>
           <Text style={styles.chev}>{showSwitcher ? "▲" : "▼"}</Text>
         </TouchableOpacity>
+        <View style={styles.autoBox}>
+          <Text style={styles.autoLabel}>Auto</Text>
+          <Switch
+            value={autoCollect}
+            onValueChange={setAutoCollect}
+            trackColor={{ false: "#333", true: "#7a1f1f" }}
+            thumbColor={autoCollect ? "#FF1F1F" : "#888"}
+            testID="auto-collect-switch"
+          />
+        </View>
         <TouchableOpacity
           style={styles.reloadBtn}
           onPress={() => webRef.current?.reload()}
           testID="reload-btn"
         >
-          <Text style={{ fontSize: 18 }}>🔄</Text>
+          <Text style={{ fontSize: 16 }}>🔄</Text>
         </TouchableOpacity>
       </View>
+      {autoCollect && (
+        <View style={styles.autoBanner} testID="auto-banner">
+          <Text style={styles.autoBannerText}>
+            ⚡ Auto-coleta ATIVA — re-injetando a cada 30s
+            {lastAutoAt ? ` · última: ${new Date(lastAutoAt).toLocaleTimeString("pt-BR")}` : ""}
+          </Text>
+        </View>
+      )}
 
       {showSwitcher && (
         <View style={styles.switcher} testID="site-switcher">
@@ -369,15 +412,35 @@ const styles = StyleSheet.create({
   chev: { color: "#bbb", fontSize: 12 },
   checkMark: { color: "#FF1F1F", fontSize: 18, fontWeight: "800" },
   reloadBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     backgroundColor: "#1a1a1a",
     borderWidth: 1,
     borderColor: "#2a2a2a",
     alignItems: "center",
     justifyContent: "center",
   },
+  autoBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1a1a1a",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#2a2a2a",
+    gap: 4,
+  },
+  autoLabel: { color: "#bbb", fontSize: 11, fontWeight: "700" },
+  autoBanner: {
+    backgroundColor: "#3a1010",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#5a1a1a",
+  },
+  autoBannerText: { color: "#ffb84a", fontSize: 11, fontWeight: "600", textAlign: "center" },
   switcher: {
     backgroundColor: "#141414",
     borderBottomWidth: 1,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import {
   View,
   Text,
@@ -14,11 +14,13 @@ import {
   getStats,
   getPrediction,
   getPredictionsStats,
+  evaluateRules,
   logPrediction,
   clearPredictions,
   Stats,
   Prediction,
   PredictionStats,
+  RuleMatch,
   SourceType,
   COLOR_HEX,
   COLOR_LABEL,
@@ -37,35 +39,41 @@ export default function StatsScreen() {
   const [pred, setPred] = useState<Prediction | null>(null);
   const [predErr, setPredErr] = useState<string | null>(null);
   const [pStats, setPStats] = useState<PredictionStats | null>(null);
+  const [ruleMatch, setRuleMatch] = useState<RuleMatch | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const src = filter === "all" ? undefined : filter;
-    try {
-      const s = await getStats(src, 200);
-      setStats(s);
-    } catch { setStats(null); }
+    try { const s = await getStats(src, 200); setStats(s); } catch { setStats(null); }
     try {
       const p = await getPrediction(src, 50);
-      setPred(p);
-      setPredErr(null);
+      setPred(p); setPredErr(null);
     } catch (e: any) {
       setPred(null);
       let msg = "Colete mais rodadas para gerar uma previsão.";
       try { const parsed = JSON.parse(e.message); if (parsed?.detail) msg = parsed.detail; } catch {}
       setPredErr(msg);
     }
-    try {
-      const ps = await getPredictionsStats(src);
-      setPStats(ps);
-    } catch { setPStats(null); }
+    try { setPStats(await getPredictionsStats(src)); } catch { setPStats(null); }
+    try { setRuleMatch(await evaluateRules(src)); } catch { setRuleMatch(null); }
     setLoading(false);
   }, [filter]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
   useEffect(() => { load(); }, [load]);
+
+  // Auto-refresh a cada 20s
+  useEffect(() => {
+    if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null; }
+    if (autoRefresh) {
+      autoRef.current = setInterval(() => { load(); }, 20000);
+    }
+    return () => { if (autoRef.current) clearInterval(autoRef.current); };
+  }, [autoRefresh, load]);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
@@ -133,12 +141,49 @@ export default function StatsScreen() {
             <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>{f.label}</Text>
           </TouchableOpacity>
         ))}
+        <TouchableOpacity
+          style={[styles.filterChip, autoRefresh && styles.filterChipActive]}
+          onPress={() => setAutoRefresh((v) => !v)}
+          testID="auto-refresh-toggle"
+        >
+          <Text style={[styles.filterText, autoRefresh && styles.filterTextActive]}>
+            {autoRefresh ? "⚡ Auto" : "Auto off"}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {loading && !stats && !pred ? (
         <View style={styles.center}><ActivityIndicator color="#FF1F1F" size="large" /></View>
       ) : (
         <>
+          {/* Regra ativa */}
+          {ruleMatch?.matched && ruleMatch.rule && (
+            <View style={[styles.card, { borderColor: "#1f7a47", backgroundColor: "#0d3320" }]} testID="rule-active">
+              <Text style={styles.ruleAlert}>🎯 REGRA ATIVA: {ruleMatch.rule.name}</Text>
+              <View style={styles.ruleAlertRow}>
+                <View
+                  style={[
+                    styles.predBall,
+                    {
+                      backgroundColor: COLOR_HEX[ruleMatch.rule.action.color],
+                      borderColor: ruleMatch.rule.action.color === "white" ? "#888" : "#000",
+                      width: 50, height: 50, borderRadius: 25,
+                    },
+                  ]}
+                />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.ruleAlertText}>
+                    Apostar <Text style={styles.bold}>{COLOR_LABEL[ruleMatch.rule.action.color]}</Text>
+                    {ruleMatch.rule.action.gales > 0 ? ` · até G${ruleMatch.rule.action.gales}` : ""}
+                  </Text>
+                  {ruleMatch.rule.action.note ? (
+                    <Text style={styles.ruleAlertNote}>{ruleMatch.rule.action.note}</Text>
+                  ) : null}
+                </View>
+              </View>
+            </View>
+          )}
+
           {/* Previsão com âncora */}
           <View style={styles.card} testID="prediction-card">
             <View style={styles.cardHeader}>
@@ -406,4 +451,9 @@ const styles = StyleSheet.create({
   scoreBlock: { alignItems: "center" },
   scoreBig: { color: "#fff", fontWeight: "800", fontSize: 28 },
   scoreSmall: { color: "#9a9a9a", fontSize: 11, fontWeight: "700", marginTop: 2 },
+  ruleAlert: { color: "#86efac", fontWeight: "800", fontSize: 14, marginBottom: 10 },
+  ruleAlertRow: { flexDirection: "row", alignItems: "center" },
+  ruleAlertText: { color: "#fff", fontSize: 15 },
+  ruleAlertNote: { color: "#bdbdbd", fontSize: 12, marginTop: 2, fontStyle: "italic" },
+  bold: { fontWeight: "800", color: "#fff" },
 });

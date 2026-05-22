@@ -2,7 +2,7 @@ const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export const API_BASE = `${BACKEND}/api`;
 
-export type SourceType = "tipminer" | "megatroia" | "manual";
+export type SourceType = "tipminer" | "megatroia" | "blaze" | "manual";
 export type ColorType = "red" | "black" | "white";
 
 export interface Round {
@@ -164,6 +164,72 @@ export async function runSimulation(source?: SourceType, window = 30, limit = 50
   p.append("limit", String(limit));
   const res = await fetch(`${API_BASE}/simulate?${p}`);
   if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ---------------- Rules ----------------
+export type RuleCondType = "streak" | "after_color" | "gap_white" | "last_n_pattern";
+export interface RuleCondition {
+  type: RuleCondType;
+  color?: ColorType;
+  op?: ">=" | "==" | "<=" | ">" | "<";
+  value?: number;
+  pattern?: ColorType[];
+}
+export interface RuleAction {
+  color: ColorType;
+  gales: number;
+  note?: string;
+}
+export interface Rule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  conditions: RuleCondition[];
+  action: RuleAction;
+  priority: number;
+  created_at?: string;
+}
+export interface RuleMatch {
+  matched: boolean;
+  rule?: Rule | null;
+  reason?: string | null;
+}
+
+export async function listRules(): Promise<Rule[]> {
+  const res = await fetch(`${API_BASE}/rules`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+export async function createRule(r: Omit<Rule, "id" | "created_at">): Promise<Rule> {
+  const res = await fetch(`${API_BASE}/rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(r),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+export async function updateRule(id: string, r: Omit<Rule, "id" | "created_at">): Promise<Rule> {
+  const res = await fetch(`${API_BASE}/rules/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(r),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+export async function deleteRule(id: string): Promise<{ deleted: number }> {
+  const res = await fetch(`${API_BASE}/rules/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+export async function evaluateRules(source?: SourceType, window = 30): Promise<RuleMatch> {
+  const p = new URLSearchParams();
+  if (source) p.append("source", source);
+  p.append("window", String(window));
+  const res = await fetch(`${API_BASE}/rules/evaluate?${p}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
