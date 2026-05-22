@@ -8,7 +8,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { listRounds, Round, SourceType, COLOR_HEX } from "../src/api";
 
@@ -55,7 +54,6 @@ export default function HistoryScreen() {
 
   return (
     <View style={styles.container} testID="history-screen">
-      {/* Filtros */}
       <View style={styles.filterRow}>
         {FILTERS.map((f) => (
           <TouchableOpacity
@@ -77,7 +75,7 @@ export default function HistoryScreen() {
         </View>
       ) : rounds.length === 0 ? (
         <View style={styles.center}>
-          <Ionicons name="cube-outline" size={56} color="#3a3a3a" />
+          <Text style={{ fontSize: 56 }}>📦</Text>
           <Text style={styles.emptyTitle}>Nenhuma rodada salva</Text>
           <Text style={styles.emptyText}>
             Vá até a aba Captura e pressione o botão Coletar rodadas para começar.
@@ -151,10 +149,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#2a2a2a",
   },
-  filterChipActive: {
-    backgroundColor: "#22090a",
-    borderColor: "#FF1F1F",
-  },
+  filterChipActive: { backgroundColor: "#22090a", borderColor: "#FF1F1F" },
   filterText: { color: "#9a9a9a", fontWeight: "700", fontSize: 12 },
   filterTextActive: { color: "#FF1F1F" },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 8 },

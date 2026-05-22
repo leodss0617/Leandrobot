@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import {
   getStats,
@@ -102,8 +101,8 @@ export default function StatsScreen() {
           {/* Previsão */}
           <View style={styles.card} testID="prediction-card">
             <View style={styles.cardHeader}>
-              <Ionicons name="flash" size={20} color="#FFD700" />
-              <Text style={styles.cardTitle}>Próxima Cor (IA estatística)</Text>
+              <Text style={styles.cardEmoji}>⚡</Text>
+              <Text style={styles.cardTitle}>Próxima Cor</Text>
             </View>
             {pred ? (
               <>
@@ -117,11 +116,9 @@ export default function StatsScreen() {
                       },
                     ]}
                   >
-                    <Ionicons
-                      name="arrow-forward"
-                      size={26}
-                      color={pred.next_color === "white" ? "#111" : "#fff"}
-                    />
+                    <Text style={{ fontSize: 32, color: pred.next_color === "white" ? "#111" : "#fff" }}>
+                      ➜
+                    </Text>
                   </View>
                   <View style={{ flex: 1, marginLeft: 16 }}>
                     <Text style={styles.predLabel} testID="prediction-color">
@@ -139,7 +136,7 @@ export default function StatsScreen() {
                 </View>
                 <Text style={styles.rationale}>{pred.rationale}</Text>
                 <Text style={styles.disclaimer}>
-                  ⚠️ Aviso: análise estatística não é garantia de resultado. Use com responsabilidade.
+                  ⚠️ Análise estatística não é garantia. Aposte com responsabilidade.
                 </Text>
               </>
             ) : (
@@ -150,7 +147,7 @@ export default function StatsScreen() {
           {/* Estatísticas gerais */}
           <View style={styles.card} testID="stats-card">
             <View style={styles.cardHeader}>
-              <Ionicons name="stats-chart" size={20} color="#FF1F1F" />
+              <Text style={styles.cardEmoji}>📊</Text>
               <Text style={styles.cardTitle}>Frequências (últimas {stats?.total ?? 0})</Text>
             </View>
             {stats && stats.total > 0 ? (
@@ -160,20 +157,20 @@ export default function StatsScreen() {
                 <StatRow color="white" pct={stats.white_pct} count={stats.white} />
                 <View style={styles.divider} />
                 <View style={styles.metricRow}>
-                  <Ionicons name="trending-up" size={16} color="#9a9a9a" />
+                  <Text style={styles.metricEmoji}>📈</Text>
                   <Text style={styles.metricText}>
                     Sequência atual:{" "}
-                    <Text style={{ color: "#fff", fontWeight: "700" }}>
+                    <Text style={styles.metricStrong}>
                       {stats.current_streak_len}x{" "}
                       {stats.current_streak_color ? COLOR_LABEL[stats.current_streak_color] : "—"}
                     </Text>
                   </Text>
                 </View>
                 <View style={styles.metricRow}>
-                  <Ionicons name="snow" size={16} color="#9a9a9a" />
+                  <Text style={styles.metricEmoji}>❄️</Text>
                   <Text style={styles.metricText}>
                     Branco visto há:{" "}
-                    <Text style={{ color: "#fff", fontWeight: "700" }}>
+                    <Text style={styles.metricStrong}>
                       {stats.last_white_ago === null ? "nunca" : `${stats.last_white_ago} rodadas`}
                     </Text>
                   </Text>
@@ -181,7 +178,7 @@ export default function StatsScreen() {
                 {stats.hot_numbers.length > 0 && (
                   <>
                     <View style={styles.divider} />
-                    <Text style={styles.subTitle}>Números mais frequentes</Text>
+                    <Text style={styles.subTitle}>🔥 Números mais frequentes</Text>
                     <View style={styles.hotRow}>
                       {stats.hot_numbers.map((h) => {
                         const c = h.number === 0 ? "white" : h.number <= 7 ? "red" : "black";
@@ -194,7 +191,7 @@ export default function StatsScreen() {
                               { backgroundColor: COLOR_HEX[c], borderColor: isWhite ? "#888" : "#000" },
                             ]}
                           >
-                            <Text style={{ color: isWhite ? "#111" : "#fff", fontWeight: "800" }}>
+                            <Text style={{ color: isWhite ? "#111" : "#fff", fontWeight: "800", fontSize: 18 }}>
                               {h.number}
                             </Text>
                             <Text style={{ color: isWhite ? "#444" : "#ddd", fontSize: 10 }}>
@@ -235,12 +232,15 @@ function StatRow({
           { backgroundColor: COLOR_HEX[color], borderColor: isWhite ? "#888" : "#000" },
         ]}
       />
-      <Text style={styles.statLabel}>{COLOR_LABEL[color]}</Text>
+      <Text style={styles.statLabel} numberOfLines={1}>{COLOR_LABEL[color]}</Text>
       <View style={styles.barBg}>
         <View style={[styles.barFill, { width: `${Math.min(100, pct)}%`, backgroundColor: COLOR_HEX[color] }]} />
       </View>
-      <Text style={styles.statValue}>
-        {pct}% ({count})
+      <Text style={styles.statValue} numberOfLines={1}>
+        {pct}%
+      </Text>
+      <Text style={styles.statCount} numberOfLines={1}>
+        ({count})
       </Text>
     </View>
   );
@@ -259,7 +259,7 @@ function ScoreBar({
 }) {
   return (
     <View style={styles.scoreCol}>
-      <Text style={styles.scoreLabel}>{label}</Text>
+      <Text style={styles.scoreLabel} numberOfLines={1}>{label}</Text>
       <View style={[styles.scoreBox, { backgroundColor: color, borderColor: color === "#e0e0e0" ? "#888" : color }]}>
         <Text style={[styles.scoreVal, { color: textColor }]}>{value}%</Text>
       </View>
@@ -269,7 +269,7 @@ function ScoreBar({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0c0c0c" },
-  filterRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
+  filterRow: { flexDirection: "row", gap: 8, marginBottom: 14, flexWrap: "wrap" },
   filterChip: {
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -291,46 +291,50 @@ const styles = StyleSheet.create({
     borderColor: "#1f1f1f",
   },
   cardHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 },
-  cardTitle: { color: "#fff", fontWeight: "800", fontSize: 15 },
+  cardEmoji: { fontSize: 18 },
+  cardTitle: { color: "#fff", fontWeight: "800", fontSize: 15, flex: 1 },
   predRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6 },
   predBall: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
   },
-  predLabel: { color: "#fff", fontWeight: "800", fontSize: 24 },
-  predConf: { color: "#FFD700", fontWeight: "700", marginTop: 2 },
-  scoreRow: { flexDirection: "row", marginTop: 14, gap: 8 },
+  predLabel: { color: "#fff", fontWeight: "800", fontSize: 22 },
+  predConf: { color: "#FFD700", fontWeight: "700", marginTop: 2, fontSize: 13 },
+  scoreRow: { flexDirection: "row", marginTop: 14, gap: 6 },
   scoreCol: { flex: 1, alignItems: "center" },
-  scoreLabel: { color: "#9a9a9a", fontSize: 11, fontWeight: "700", marginBottom: 4 },
+  scoreLabel: { color: "#9a9a9a", fontSize: 10, fontWeight: "700", marginBottom: 4 },
   scoreBox: {
     width: "100%",
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: 8,
     alignItems: "center",
     borderWidth: 1,
   },
-  scoreVal: { fontWeight: "800", fontSize: 14 },
+  scoreVal: { fontWeight: "800", fontSize: 13 },
   rationale: { color: "#bdbdbd", fontSize: 12, marginTop: 12, lineHeight: 18 },
   disclaimer: { color: "#888", fontSize: 11, marginTop: 8, fontStyle: "italic" },
   emptyHint: { color: "#9a9a9a", fontSize: 13, paddingVertical: 8, textAlign: "center" },
-  statRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, gap: 8 },
+  statRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, gap: 6 },
   dot: { width: 14, height: 14, borderRadius: 7, borderWidth: 1 },
-  statLabel: { color: "#ccc", fontWeight: "600", width: 70, fontSize: 12 },
-  barBg: { flex: 1, height: 8, backgroundColor: "#1f1f1f", borderRadius: 4, overflow: "hidden" },
+  statLabel: { color: "#ccc", fontWeight: "600", width: 64, fontSize: 12 },
+  barBg: { flex: 1, height: 8, backgroundColor: "#1f1f1f", borderRadius: 4, overflow: "hidden", minWidth: 30 },
   barFill: { height: "100%" },
-  statValue: { color: "#fff", fontWeight: "700", width: 78, textAlign: "right", fontSize: 12 },
+  statValue: { color: "#fff", fontWeight: "700", width: 48, textAlign: "right", fontSize: 12 },
+  statCount: { color: "#888", fontWeight: "600", width: 40, textAlign: "right", fontSize: 11 },
   divider: { height: 1, backgroundColor: "#1f1f1f", marginVertical: 10 },
   metricRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
-  metricText: { color: "#9a9a9a", fontSize: 13 },
+  metricEmoji: { fontSize: 14 },
+  metricText: { color: "#9a9a9a", fontSize: 13, flex: 1 },
+  metricStrong: { color: "#fff", fontWeight: "700" },
   subTitle: { color: "#fff", fontWeight: "700", marginBottom: 8 },
   hotRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   hotBall: {
-    width: 50,
-    height: 50,
+    width: 52,
+    height: 52,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",

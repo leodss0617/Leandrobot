@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   ScrollView,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { clearRounds, listRounds, SourceType, COLOR_HEX } from "../src/api";
 
@@ -72,7 +71,7 @@ export default function SettingsScreen() {
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 16 }} testID="settings-screen">
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <Ionicons name="server" size={20} color="#FF1F1F" />
+          <Text style={styles.headerEmoji}>💾</Text>
           <Text style={styles.cardTitle}>Rodadas armazenadas</Text>
         </View>
         {loading ? (
@@ -88,7 +87,7 @@ export default function SettingsScreen() {
 
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <Ionicons name="trash" size={20} color="#FF1F1F" />
+          <Text style={styles.headerEmoji}>🗑️</Text>
           <Text style={styles.cardTitle}>Limpar histórico</Text>
         </View>
         <DangerBtn
@@ -114,7 +113,7 @@ export default function SettingsScreen() {
 
       <View style={styles.card}>
         <View style={styles.headerRow}>
-          <Ionicons name="information-circle" size={20} color="#FFD700" />
+          <Text style={styles.headerEmoji}>ℹ️</Text>
           <Text style={styles.cardTitle}>Como funciona</Text>
         </View>
         <Text style={styles.helpText}>
@@ -173,7 +172,7 @@ function DangerBtn({
         <ActivityIndicator color={solid ? "#fff" : "#FF1F1F"} />
       ) : (
         <>
-          <Ionicons name="trash-outline" size={16} color={solid ? "#fff" : "#FF1F1F"} />
+          <Text style={{ fontSize: 16 }}>🗑️</Text>
           <Text style={[styles.dangerText, solid && { color: "#fff" }]}>{label}</Text>
         </>
       )}
@@ -192,7 +191,8 @@ const styles = StyleSheet.create({
     borderColor: "#1f1f1f",
   },
   headerRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 },
-  cardTitle: { color: "#fff", fontWeight: "800", fontSize: 15 },
+  headerEmoji: { fontSize: 18 },
+  cardTitle: { color: "#fff", fontWeight: "800", fontSize: 15, flex: 1 },
   countRow: {
     flexDirection: "row",
     justifyContent: "space-between",
