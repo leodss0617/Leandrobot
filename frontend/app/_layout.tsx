@@ -1,24 +1,13 @@
 import { Tabs } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { Ionicons } from "@expo/vector-icons";
-import { useFonts } from "expo-font";
-import { View, ActivityIndicator } from "react-native";
+import { Text } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+const TabIcon = ({ emoji, color }: { emoji: string; color: string }) => (
+  <Text style={{ fontSize: 22, color }}>{emoji}</Text>
+);
+
 export default function RootLayout() {
-  // Preload the Ionicons font to avoid "Font file for ionicons is empty" on Expo Go.
-  const [loaded] = useFonts({
-    ...Ionicons.font,
-  });
-
-  if (!loaded) {
-    return (
-      <View style={{ flex: 1, backgroundColor: "#0c0c0c", alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator size="large" color="#FF1F1F" />
-      </View>
-    );
-  }
-
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
@@ -45,9 +34,7 @@ export default function RootLayout() {
           options={{
             title: "Captura",
             headerTitle: "Coletor de Rodadas",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="radio" color={color} size={size} />
-            ),
+            tabBarIcon: ({ color }) => <TabIcon emoji="📡" color={color} />,
           }}
         />
         <Tabs.Screen
@@ -55,9 +42,7 @@ export default function RootLayout() {
           options={{
             title: "Histórico",
             headerTitle: "Histórico de Rodadas",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="time" color={color} size={size} />
-            ),
+            tabBarIcon: ({ color }) => <TabIcon emoji="🕐" color={color} />,
           }}
         />
         <Tabs.Screen
@@ -65,9 +50,7 @@ export default function RootLayout() {
           options={{
             title: "Análise",
             headerTitle: "Análise & Previsão",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="analytics" color={color} size={size} />
-            ),
+            tabBarIcon: ({ color }) => <TabIcon emoji="📊" color={color} />,
           }}
         />
         <Tabs.Screen
@@ -75,9 +58,7 @@ export default function RootLayout() {
           options={{
             title: "Ajustes",
             headerTitle: "Ajustes",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="settings" color={color} size={size} />
-            ),
+            tabBarIcon: ({ color }) => <TabIcon emoji="⚙️" color={color} />,
           }}
         />
       </Tabs>
