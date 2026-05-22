@@ -4,7 +4,7 @@ import { Text } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 const TabIcon = ({ emoji, color }: { emoji: string; color: string }) => (
-  <Text style={{ fontSize: 22, color }}>{emoji}</Text>
+  <Text style={{ fontSize: 20, color }}>{emoji}</Text>
 );
 
 export default function RootLayout() {
@@ -21,12 +21,13 @@ export default function RootLayout() {
             borderTopColor: "#1a1a1a",
             borderTopWidth: 1,
             height: 64,
-            paddingBottom: 8,
-            paddingTop: 6,
+            paddingBottom: 6,
+            paddingTop: 4,
           },
           tabBarActiveTintColor: "#FF1F1F",
           tabBarInactiveTintColor: "#6e6e6e",
-          tabBarLabelStyle: { fontSize: 11, fontWeight: "600" },
+          tabBarLabelStyle: { fontSize: 10, fontWeight: "600" },
+          tabBarItemStyle: { paddingHorizontal: 2 },
         }}
       >
         <Tabs.Screen
@@ -41,7 +42,7 @@ export default function RootLayout() {
           name="history"
           options={{
             title: "Histórico",
-            headerTitle: "Histórico de Rodadas",
+            headerTitle: "Histórico",
             tabBarIcon: ({ color }) => <TabIcon emoji="🕐" color={color} />,
           }}
         />
@@ -51,6 +52,22 @@ export default function RootLayout() {
             title: "Análise",
             headerTitle: "Análise & Previsão",
             tabBarIcon: ({ color }) => <TabIcon emoji="📊" color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="calculator"
+          options={{
+            title: "Calc",
+            headerTitle: "Calculadora Double",
+            tabBarIcon: ({ color }) => <TabIcon emoji="🎲" color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="simulator"
+          options={{
+            title: "Simul.",
+            headerTitle: "Simulador",
+            tabBarIcon: ({ color }) => <TabIcon emoji="🧪" color={color} />,
           }}
         />
         <Tabs.Screen
