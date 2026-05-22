@@ -1,0 +1,37 @@
+{
+  "summary": "Backend-only test suite for Blaze Rounds Collector API. Created pytest suite at /app/backend/tests/test_blaze_api.py covering all 8 requested behaviors (root, bulk insert + color inference + dedupe, single insert + source-required 400, list with source filter and no _id leakage, scoped/global delete, stats with shape validation, and prediction 400 vs valid response). All 14 tests PASSED (100%) against the public URL EXPO_PUBLIC_BACKEND_URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/rounds/bulk", "issue": "Dedupe key includes color, but color is derived from number, so it is redundant — not a bug, just a minor inefficiency."},
+      {"endpoint": "global", "issue": "server.py uses deprecated FastAPI @app.on_event('shutdown'); migrate to lifespan handlers in a future cleanup."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_blaze_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Dedupe key for bulk includes time_str and seconds — if a site omits seconds two identical entries within the same minute could collide; consider also using site_ts when available.",
+    "list_rounds sorts by captured_at (server time) instead of site_ts; ordering may not match the actual round order from the source site if batches arrive out of order.",
+    "Prediction uses a fixed minimum of 5 rounds but window has a floor of 10 — when 5-9 rounds exist, the route works but the rationale message says 'Janela {total}' which is fine; ok."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_blaze_api.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Tests seed and clean their own data using DELETE /api/rounds?source=... before and after each scenario; the session-scoped autouse fixture cleans tipminer/megatroia/manual at start and finish. No leftover test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public API base URL is read from frontend/.env EXPO_PUBLIC_BACKEND_URL. Reuse /app/backend/tests/test_blaze_api.py for regression. Note that some tests (stats, prediction-400, list-empty) delete ALL rounds, so do not run in parallel against shared data.",
+  "rca_of_issue": "N/A — no issues found. All 8 requested behaviors verified end-to-end including: color inference (0=white, 1-7=red, 8-14=black), dedupe via (source,number,time_str,seconds), 422 for invalid source and out-of-range number, 400 when source missing on POST /api/rounds, _id excluded from GET responses, scoped DELETE preserves other sources, stats percentages 1-decimal summing to ~100, current streak & last_white_ago correct, prediction 400 under 5 rounds and valid PT-BR rationale with scores summing to ~100."
+}
