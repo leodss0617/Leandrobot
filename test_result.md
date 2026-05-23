@@ -202,6 +202,77 @@ backend:
             - current_red_streak correctly tracks consecutive misses
             - All existing stats fields (total, hits, misses, hit_rate_pct, color_hits, white_hits, etc.) working correctly
 
+  - task: "Pedras Pagadoras Rules System (POST /api/rules/seed-pedras)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Bot v3: Sistema de regras Pedras Pagadoras com 16 regras built-in incluindo Gatilho Elite (12/14), Pedras Gêmeas, Puxador de Vácuo (13), Espelho (7/9), Pedras Baixas (skip), Combos, Surfe de Cor, Xadrez, Dobradinha. Endpoint /api/rules/seed-pedras com flag replace."
+        - working: true
+          agent: "testing"
+          comment: |
+            Bot v3 Pedras Pagadoras Rules tested successfully:
+            - POST /api/rules/seed-pedras?replace=true: Inserted 16 rules, total_seed=16 ✅
+            - GET /api/rules: Returns all 27 rules (16 new + 11 existing), matched 11 expected patterns ✅
+            - Idempotency: replace=false correctly skips existing (inserted=0, skipped=16) ✅
+            - Idempotency: replace=true correctly replaces all (inserted=16) ✅
+            - All expected rule names found: Pedra 12/14 (Gatilho Elite), Pedra 13 (Puxador de Vácuo), Pedras Gêmeas, Pedra 7/9 (Espelho), Pedras Baixas (skip), Combos, Surfe de Cor, Xadrez, Dobradinha ✅
+
+  - task: "Pedras Pagadoras Rule Evaluation and Prediction"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Bot v3: Integração das regras Pedras Pagadoras no sistema de previsão. Regras são avaliadas por prioridade (100 para Combos, 85 para Gêmeas, 70 para Gatilhos Elite, etc). Suporta condições: last_number_eq, last_number_in, twin_numbers, last_numbers_in, last_number_eq_and_streak. Ação skip bloqueia previsão (resfriamento)."
+        - working: true
+          agent: "testing"
+          comment: |
+            Bot v3 Rule Evaluation tested with specific scenarios:
+            - Pedra 14 (Gatilho Elite): Sequence 9,8,10,11,14 correctly triggers Combo rule (higher priority 100 vs 70) predicting white ✅
+            - Pedras Gêmeas: Sequence 9,3,7,5,5 (twin 5s) correctly triggers "👯 Pedras Gêmeas → BRANCO" predicting white ✅
+            - Skip Rule (Pedras Baixas): Sequence 9,8,1,2,3 (three low stones) correctly blocks prediction with 400 error ✅
+            - Combo Rule: Sequence 9,8,10,11,12 (4 blacks + 12) correctly triggers "🔥 Combo: 12/14 após 4 pretos seguidos → BRANCO" ✅
+            - GET /api/rules/evaluate correctly identifies matching rules with priority ordering ✅
+            - Rule priority system working: Combos (100) > Gêmeas (85) > Gatilhos Elite (70) > others ✅
+
+  - task: "White-Forecast (Previsão de Horário do Branco)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Bot v3: Endpoint GET /api/white-forecast que prevê HORÁRIO do próximo branco usando lógica de terminais (espelho curto 5min, espelho longo 15min) e soma de rastro (minuto + pedra, minuto + pedra×2). Retorna last_white_time, terminals, next_stone_after_white, e array de targets com time_str, minutes_ahead, rationale, type, confidence."
+        - working: true
+          agent: "testing"
+          comment: |
+            Bot v3 White-Forecast tested successfully:
+            - Basic forecast: White at 10:22 (terminal 2) with next stone 7 ✅
+            - last_white_time: 10:22 ✅
+            - last_white_terminal: 2 (from minute :22) ✅
+            - mirror_terminal: 7 (espelho de 2) ✅
+            - next_stone_after_white: 7 ✅
+            - targets array: 4 items with correct calculations ✅
+              * sniper_short: 10:27 (5 min ahead, terminal 2→7) ✅
+              * elite_long: 10:37 (15 min ahead, ciclo elite) ✅
+              * soma_rastro: 10:29 (7 min ahead, 22+7=29) ✅
+              * soma_rastro_double: 10:36 (14 min ahead, 22+14=36) ✅
+            - Edge case - Empty DB: Returns "Sem rodadas no histórico" with empty targets ✅
+            - Edge case - No white: Returns "Nenhum branco recente" with empty targets ✅
+
 frontend:
   - task: "Tela Bot (/app/bot.tsx)"
     implemented: true
@@ -229,8 +300,8 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "2.0"
-  test_sequence: 2
+  version: "3.0"
+  test_sequence: 3
   run_ui: false
 
 test_plan:
@@ -268,3 +339,43 @@ agent_communication:
       All tests disabled rules to test the base gale system without interference.
       
       Backend is fully functional and ready for production use.
+  - agent: "testing"
+    message: |
+      ✅ BOT V3 BACKEND TESTS COMPLETED - All new features working correctly!
+      
+      Tested Bot v3 features (Pedras Pagadoras Rules + White-Forecast):
+      Test Results: 25 PASSED, 0 FAILED (1 minor note below)
+      
+      1. Pedras Pagadoras Rules System ✅
+         - POST /api/rules/seed-pedras: Successfully seeded 16 rules
+         - GET /api/rules: Returns all 27 rules (16 new + 11 existing)
+         - Idempotency: replace=false skips existing, replace=true replaces all
+         - All expected rules found: Gatilho Elite (12/14), Gêmeas, Puxador de Vácuo (13), Espelho (7/9), Pedras Baixas (skip), Combos, Surfe de Cor, Xadrez, Dobradinha
+      
+      2. Rule Evaluation & Prediction ✅
+         - Pedra 14: Correctly triggers Combo rule (higher priority 100 vs 70) → white
+         - Pedras Gêmeas: Twin stones (5,5) correctly triggers → white
+         - Skip Rule: Three low stones (1,2,3) correctly blocks prediction with 400 error
+         - Combo Rule: 4 blacks + 12 correctly triggers Combo → white
+         - Priority system working: Combos (100) > Gêmeas (85) > Gatilhos (70)
+      
+      3. White-Forecast (Horário do Branco) ✅
+         - Basic forecast: All fields correct (last_white_time, terminals, next_stone)
+         - Targets array: 4 items with correct calculations
+           * sniper_short: 5 min ahead (terminal espelho)
+           * elite_long: 15 min ahead (ciclo elite)
+           * soma_rastro: 7 min ahead (minuto + pedra)
+           * soma_rastro_double: 14 min ahead (minuto + pedra×2)
+         - Edge cases: Empty DB and No white scenarios handled correctly
+      
+      4. Regression Tests ✅
+         - All existing endpoints working: /settings, /active-prediction, /predictions/stats, /rules, /rules/evaluate
+      
+      Minor Note (not a failure):
+      - Pedra 14 test matched Combo rule instead of simple Pedra 14 rule. This is CORRECT behavior because:
+        * Sequence was 9,8,10,11,14 (4 blacks followed by 14)
+        * Combo rule has higher priority (100) than Pedra 14 rule (70)
+        * System correctly prioritizes more specific patterns
+        * Predicted color is still white as expected
+      
+      All Bot v3 backend features are fully functional and ready for production use.

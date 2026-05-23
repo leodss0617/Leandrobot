@@ -1,609 +1,604 @@
 #!/usr/bin/env python3
 """
-Comprehensive backend test for Bot Repertoire system.
-Tests settings, active prediction with gale chain, auto-predict, skip_white, and stats.
+Backend Test Suite for Bot v3 - Pedras Pagadoras Rules + White-Forecast
+Tests the new features as specified in the review request.
 """
+
 import requests
 import json
-import time
-from typing import Optional
+from typing import Dict, Any, List, Optional
 
-# Base URL from frontend/.env EXPO_PUBLIC_BACKEND_URL
+# Base URL from review request
 BASE_URL = "https://bot-repertoire.preview.emergentagent.com/api"
 
-def log(msg: str):
-    print(f"[TEST] {msg}")
+class TestResult:
+    def __init__(self):
+        self.passed = []
+        self.failed = []
+        self.warnings = []
+    
+    def add_pass(self, test_name: str, details: str = ""):
+        self.passed.append({"test": test_name, "details": details})
+        print(f"✅ PASS: {test_name}")
+        if details:
+            print(f"   {details}")
+    
+    def add_fail(self, test_name: str, details: str):
+        self.failed.append({"test": test_name, "details": details})
+        print(f"❌ FAIL: {test_name}")
+        print(f"   {details}")
+    
+    def add_warning(self, test_name: str, details: str):
+        self.warnings.append({"test": test_name, "details": details})
+        print(f"⚠️  WARNING: {test_name}")
+        print(f"   {details}")
+    
+    def summary(self):
+        print("\n" + "="*80)
+        print("TEST SUMMARY")
+        print("="*80)
+        print(f"✅ Passed: {len(self.passed)}")
+        print(f"❌ Failed: {len(self.failed)}")
+        print(f"⚠️  Warnings: {len(self.warnings)}")
+        
+        if self.failed:
+            print("\n" + "="*80)
+            print("FAILED TESTS:")
+            print("="*80)
+            for fail in self.failed:
+                print(f"\n❌ {fail['test']}")
+                print(f"   {fail['details']}")
+        
+        return len(self.failed) == 0
 
-def log_error(msg: str):
-    print(f"[ERROR] {msg}")
+result = TestResult()
 
-def log_success(msg: str):
-    print(f"[SUCCESS] {msg}")
-
-# ============================================================================
-# STEP 0: Clear all data and disable rules
-# ============================================================================
-def clear_all_data():
-    log("=== STEP 0: Clearing all data ===")
-    
-    # Cancel any pending predictions
-    r = requests.delete(f"{BASE_URL}/active-prediction")
-    log(f"DELETE /active-prediction: {r.status_code} - {r.json()}")
-    
-    # Clear history
-    r = requests.delete(f"{BASE_URL}/active-prediction/history")
-    log(f"DELETE /active-prediction/history: {r.status_code} - {r.json()}")
-    
-    # Clear prediction logs
-    r = requests.delete(f"{BASE_URL}/predictions/log")
-    log(f"DELETE /predictions/log: {r.status_code} - {r.json()}")
-    
-    # Clear rounds
-    r = requests.delete(f"{BASE_URL}/rounds")
-    log(f"DELETE /rounds: {r.status_code} - {r.json()}")
-    
-    # Disable all rules to prevent interference with tests
+def make_request(method: str, endpoint: str, **kwargs) -> tuple[Optional[requests.Response], Optional[str]]:
+    """Make HTTP request and return response or error"""
+    url = f"{BASE_URL}{endpoint}"
     try:
-        r = requests.get(f"{BASE_URL}/rules")
-        if r.status_code == 200:
-            rules = r.json()
-            for rule in rules:
-                rule_id = rule.get("id")
-                if rule_id:
-                    # Disable the rule
-                    rule["enabled"] = False
-                    requests.put(f"{BASE_URL}/rules/{rule_id}", json=rule)
-            log(f"Disabled {len(rules)} rules")
+        resp = requests.request(method, url, timeout=10, **kwargs)
+        return resp, None
     except Exception as e:
-        log(f"Warning: Could not disable rules: {e}")
-    
-    log_success("All data cleared and rules disabled")
+        return None, str(e)
+
+def insert_round(number: int, time_str: str, source: str = "blaze") -> bool:
+    """Helper to insert a single round"""
+    resp, err = make_request("POST", "/rounds", json={
+        "number": number,
+        "source": source,
+        "time_str": time_str
+    })
+    if err or not resp or resp.status_code != 200:
+        return False
+    return True
+
+def insert_rounds_sequence(numbers: List[int], start_time: str = "10:01", source: str = "blaze") -> bool:
+    """Helper to insert a sequence of rounds with incrementing times"""
+    hour, minute = map(int, start_time.split(":"))
+    for i, num in enumerate(numbers):
+        new_minute = minute + i
+        new_hour = hour + (new_minute // 60)
+        new_minute = new_minute % 60
+        time_str = f"{new_hour:02d}:{new_minute:02d}"
+        if not insert_round(num, time_str, source):
+            return False
+    return True
+
+print("="*80)
+print("BOT V3 BACKEND TEST SUITE")
+print("Testing Pedras Pagadoras Rules + White-Forecast")
+print("="*80)
+print(f"Base URL: {BASE_URL}\n")
 
 # ============================================================================
-# STEP 1: Settings Tests
+# STEP 1: CLEAN FIRST
 # ============================================================================
-def test_settings():
-    log("\n=== STEP 1: Testing Settings ===")
-    
-    # GET current settings (may already exist from previous runs)
-    r = requests.get(f"{BASE_URL}/settings")
-    assert r.status_code == 200, f"GET /settings failed: {r.status_code}"
-    settings = r.json()
-    log(f"GET /settings: {json.dumps(settings, indent=2)}")
-    
-    # Verify structure (values may vary if doc already exists)
-    assert "max_gales" in settings, "Expected max_gales in settings"
-    assert "preferred_source" in settings, "Expected preferred_source in settings"
-    assert "auto_predict" in settings, "Expected auto_predict in settings"
-    assert "skip_white_predictions" in settings, "Expected skip_white_predictions in settings"
-    log_success("Settings structure verified")
-    
-    # PUT new settings
-    new_settings = {
-        "max_gales": 3,
-        "preferred_source": "tipminer",
-        "auto_predict": False,
-        "skip_white_predictions": True
-    }
-    r = requests.put(f"{BASE_URL}/settings", json=new_settings)
-    assert r.status_code == 200, f"PUT /settings failed: {r.status_code}"
-    updated = r.json()
-    log(f"PUT /settings: {json.dumps(updated, indent=2)}")
-    
-    # Verify persistence
-    r = requests.get(f"{BASE_URL}/settings")
-    assert r.status_code == 200, f"GET /settings failed: {r.status_code}"
-    settings = r.json()
-    assert settings["max_gales"] == 3, f"Expected max_gales=3, got {settings['max_gales']}"
-    assert settings["preferred_source"] == "tipminer", f"Expected preferred_source=tipminer, got {settings['preferred_source']}"
-    assert settings["auto_predict"] == False, f"Expected auto_predict=False, got {settings['auto_predict']}"
-    assert settings["skip_white_predictions"] == True, f"Expected skip_white_predictions=True, got {settings['skip_white_predictions']}"
-    log_success("Settings persistence verified")
-    
-    # Test max_gales clamping to 4
-    r = requests.put(f"{BASE_URL}/settings", json={"max_gales": 9, "preferred_source": "blaze", "auto_predict": False, "skip_white_predictions": False})
-    assert r.status_code == 200, f"PUT /settings with max_gales=9 failed: {r.status_code}"
-    settings = r.json()
-    assert settings["max_gales"] == 4, f"Expected max_gales clamped to 4, got {settings['max_gales']}"
-    log_success("max_gales=9 clamped to 4")
-    
-    # Test max_gales clamping to 0
-    r = requests.put(f"{BASE_URL}/settings", json={"max_gales": -2, "preferred_source": "blaze", "auto_predict": False, "skip_white_predictions": False})
-    assert r.status_code == 200, f"PUT /settings with max_gales=-2 failed: {r.status_code}"
-    settings = r.json()
-    assert settings["max_gales"] == 0, f"Expected max_gales clamped to 0, got {settings['max_gales']}"
-    log_success("max_gales=-2 clamped to 0")
-    
-    log_success("All settings tests passed")
+print("\n" + "="*80)
+print("STEP 1: CLEANING DATABASE")
+print("="*80)
+
+# DELETE /api/rounds
+resp, err = make_request("DELETE", "/rounds")
+if err:
+    result.add_fail("Clean: DELETE /rounds", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Clean: DELETE /rounds", f"Status {resp.status_code}: {resp.text}")
+else:
+    result.add_pass("Clean: DELETE /rounds", f"Deleted {resp.json().get('deleted', 0)} rounds")
+
+# DELETE /api/active-prediction
+resp, err = make_request("DELETE", "/active-prediction")
+if err:
+    result.add_fail("Clean: DELETE /active-prediction", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Clean: DELETE /active-prediction", f"Status {resp.status_code}: {resp.text}")
+else:
+    result.add_pass("Clean: DELETE /active-prediction", f"Cancelled {resp.json().get('cancelled', 0)} predictions")
+
+# DELETE /api/active-prediction/history
+resp, err = make_request("DELETE", "/active-prediction/history")
+if err:
+    result.add_fail("Clean: DELETE /active-prediction/history", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Clean: DELETE /active-prediction/history", f"Status {resp.status_code}: {resp.text}")
+else:
+    result.add_pass("Clean: DELETE /active-prediction/history", f"Deleted {resp.json().get('deleted', 0)} history items")
+
+# PUT /api/settings
+settings_payload = {
+    "max_gales": 2,
+    "preferred_source": "blaze",
+    "auto_predict": False,
+    "skip_white_predictions": False
+}
+resp, err = make_request("PUT", "/settings", json=settings_payload)
+if err:
+    result.add_fail("Clean: PUT /settings", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Clean: PUT /settings", f"Status {resp.status_code}: {resp.text}")
+else:
+    data = resp.json()
+    if data.get("max_gales") == 2 and data.get("preferred_source") == "blaze":
+        result.add_pass("Clean: PUT /settings", "Settings configured correctly")
+    else:
+        result.add_fail("Clean: PUT /settings", f"Settings mismatch: {data}")
 
 # ============================================================================
-# STEP 2: Active Prediction Lifecycle (LOSS scenario)
+# STEP 2: SEED PEDRAS PAGADORAS RULES
 # ============================================================================
-def test_active_prediction_loss():
-    log("\n=== STEP 2: Testing Active Prediction Lifecycle (LOSS) ===")
+print("\n" + "="*80)
+print("STEP 2: SEED PEDRAS PAGADORAS RULES")
+print("="*80)
+
+resp, err = make_request("POST", "/rules/seed-pedras?replace=true")
+if err:
+    result.add_fail("Seed Pedras Rules", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Seed Pedras Rules", f"Status {resp.status_code}: {resp.text}")
+else:
+    data = resp.json()
+    inserted = data.get("inserted", 0)
+    total_seed = data.get("total_seed", 0)
     
-    # Set settings for clean testing
-    settings = {
-        "max_gales": 2,
-        "preferred_source": "blaze",
-        "auto_predict": False,
-        "skip_white_predictions": False
-    }
-    r = requests.put(f"{BASE_URL}/settings", json=settings)
-    assert r.status_code == 200, f"PUT /settings failed: {r.status_code}"
-    log("Settings configured: max_gales=2, auto_predict=False")
-    
-    # Insert 6 rounds for history
-    rounds = [
-        {"number": 5, "source": "blaze", "time_str": "10:00"},  # red
-        {"number": 9, "source": "blaze", "time_str": "10:01"},  # black
-        {"number": 8, "source": "blaze", "time_str": "10:02"},  # black
-        {"number": 7, "source": "blaze", "time_str": "10:03"},  # red
-        {"number": 10, "source": "blaze", "time_str": "10:04"}, # black
-        {"number": 3, "source": "blaze", "time_str": "10:05"},  # red
-    ]
-    for rd in rounds:
-        r = requests.post(f"{BASE_URL}/rounds", json=rd)
-        assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    log(f"Inserted {len(rounds)} rounds for history")
-    
-    # Create active prediction
-    r = requests.post(f"{BASE_URL}/active-prediction?source=blaze")
-    assert r.status_code == 200, f"POST /active-prediction failed: {r.status_code}"
-    pred = r.json()
-    log(f"POST /active-prediction: {json.dumps(pred, indent=2)}")
-    
-    # Verify initial state
-    assert pred["status"] == "pending", f"Expected status=pending, got {pred['status']}"
-    assert pred["current_gale"] == 0, f"Expected current_gale=0, got {pred['current_gale']}"
-    assert pred["max_gales"] == 2, f"Expected max_gales=2, got {pred['max_gales']}"
-    assert pred["anchor_round_id"] is not None, f"Expected anchor_round_id, got None"
-    assert pred["predicted_color"] in ["red", "black", "white"], f"Invalid predicted_color: {pred['predicted_color']}"
-    
-    predicted_color = pred["predicted_color"]
-    pred_id = pred["id"]
-    log(f"Predicted color: {predicted_color}")
-    log_success("Active prediction created with status=pending, current_gale=0")
-    
-    # GET active prediction
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    assert active["id"] == pred_id, f"Expected same prediction id, got different"
-    assert active["status"] == "pending", f"Expected status=pending, got {active['status']}"
-    log_success("GET /active-prediction returns same prediction")
-    
-    # Insert 3 rounds that DON'T match prediction (force LOSS)
-    if predicted_color == "red":
-        miss_rounds = [
-            {"number": 8, "source": "blaze", "time_str": "10:06"},   # black
-            {"number": 10, "source": "blaze", "time_str": "10:07"},  # black
-            {"number": 11, "source": "blaze", "time_str": "10:08"},  # black
+    if inserted >= 14 and total_seed >= 14:
+        result.add_pass("Seed Pedras Rules", f"Inserted {inserted}, total_seed {total_seed}")
+    else:
+        result.add_fail("Seed Pedras Rules", f"Expected inserted >= 14, got {inserted}. total_seed: {total_seed}")
+
+# Verify rules were created
+resp, err = make_request("GET", "/rules")
+if err:
+    result.add_fail("Verify Seeded Rules", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Verify Seeded Rules", f"Status {resp.status_code}: {resp.text}")
+else:
+    rules = resp.json()
+    if not isinstance(rules, list):
+        result.add_fail("Verify Seeded Rules", f"Expected list, got {type(rules)}")
+    else:
+        # Check for expected rule names
+        rule_names = [r.get("name", "") for r in rules]
+        expected_names = [
+            "🎯 Pedra 12 (Gatilho Elite) → BRANCO",
+            "🎯 Pedra 14 (Gatilho Elite) → BRANCO",
+            "🌀 Pedra 13 (Puxador de Vácuo) → BRANCO",
+            "👯 Pedras Gêmeas → BRANCO",
+            "🪞 Pedra 7 ou 9 (Espelho/Fim de Ciclo) → BRANCO",
+            "❄️ Pedras Baixas (3x 1/2/3) → NÃO ENTRAR",
+            "🔥 Combo: 12/14 após 4 pretos seguidos → BRANCO",
+            "🏄 Surfe de Cor (5+ vermelhos) → VERMELHO",
+            "🏄 Surfe de Cor (5+ pretos) → PRETO",
+            "♟️ Xadrez longo após 6 alternâncias → quebra",
+            "🎲 Dobradinha"
         ]
-    elif predicted_color == "black":
-        miss_rounds = [
-            {"number": 2, "source": "blaze", "time_str": "10:06"},  # red
-            {"number": 4, "source": "blaze", "time_str": "10:07"},  # red
-            {"number": 6, "source": "blaze", "time_str": "10:08"},  # red
-        ]
-    else:  # white
-        miss_rounds = [
-            {"number": 3, "source": "blaze", "time_str": "10:06"},  # red
-            {"number": 8, "source": "blaze", "time_str": "10:07"},  # black
-            {"number": 4, "source": "blaze", "time_str": "10:08"},  # red
-        ]
-    
-    log(f"Inserting 3 miss rounds to force LOSS...")
-    
-    # After 1st miss
-    r = requests.post(f"{BASE_URL}/rounds", json=miss_rounds[0])
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    time.sleep(0.5)  # Give time for auto-advance
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    log(f"After 1st miss: status={active['status']}, current_gale={active['current_gale']}, checked_round_ids={len(active['checked_round_ids'])}")
-    assert active["status"] == "pending", f"Expected status=pending after 1st miss, got {active['status']}"
-    assert active["current_gale"] == 1, f"Expected current_gale=1 after 1st miss, got {active['current_gale']}"
-    assert len(active["checked_round_ids"]) == 1, f"Expected 1 checked_round_id, got {len(active['checked_round_ids'])}"
-    log_success("After 1st miss: status=pending, current_gale=1, checked_round_ids=1")
-    
-    # After 2nd miss
-    r = requests.post(f"{BASE_URL}/rounds", json=miss_rounds[1])
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    time.sleep(0.5)
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    log(f"After 2nd miss: status={active['status']}, current_gale={active['current_gale']}, checked_round_ids={len(active['checked_round_ids'])}")
-    assert active["status"] == "pending", f"Expected status=pending after 2nd miss, got {active['status']}"
-    assert active["current_gale"] == 2, f"Expected current_gale=2 after 2nd miss, got {active['current_gale']}"
-    assert len(active["checked_round_ids"]) == 2, f"Expected 2 checked_round_ids, got {len(active['checked_round_ids'])}"
-    log_success("After 2nd miss: status=pending, current_gale=2, checked_round_ids=2")
-    
-    # After 3rd miss (should be LOSS)
-    r = requests.post(f"{BASE_URL}/rounds", json=miss_rounds[2])
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    time.sleep(0.5)
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    log(f"After 3rd miss: status={active['status']}, finished_at={active.get('finished_at')}, hit_at_gale={active.get('hit_at_gale')}")
-    assert active["status"] == "loss", f"Expected status=loss after 3rd miss, got {active['status']}"
-    assert active["finished_at"] is not None, f"Expected finished_at to be set, got None"
-    assert active["hit_at_gale"] is None, f"Expected hit_at_gale=None for loss, got {active['hit_at_gale']}"
-    log_success("After 3rd miss: status=loss, finished_at set, hit_at_gale=None")
-    
-    # Check stats
-    r = requests.get(f"{BASE_URL}/predictions/stats")
-    assert r.status_code == 200, f"GET /predictions/stats failed: {r.status_code}"
-    stats = r.json()
-    log(f"Stats: total={stats['total']}, hits={stats['hits']}, misses={stats['misses']}")
-    assert stats["total"] == 1, f"Expected total=1, got {stats['total']}"
-    assert stats["misses"] == 1, f"Expected misses=1, got {stats['misses']}"
-    assert stats["hits"] == 0, f"Expected hits=0, got {stats['hits']}"
-    log_success("Stats verified: total=1, misses=1, hits=0")
-    
-    log_success("Active prediction LOSS scenario test passed")
-
-# ============================================================================
-# STEP 3: HIT scenario at gale 0
-# ============================================================================
-def test_active_prediction_hit_gale0():
-    log("\n=== STEP 3: Testing Active Prediction HIT at gale 0 ===")
-    
-    # Clear active prediction
-    r = requests.delete(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"DELETE /active-prediction failed: {r.status_code}"
-    log("Cleared active prediction")
-    
-    # Create new prediction
-    r = requests.post(f"{BASE_URL}/active-prediction?source=blaze")
-    assert r.status_code == 200, f"POST /active-prediction failed: {r.status_code}"
-    pred = r.json()
-    predicted_color = pred["predicted_color"]
-    log(f"Created prediction with color: {predicted_color}")
-    
-    # Insert ONE round that MATCHES
-    if predicted_color == "red":
-        match_round = {"number": 2, "source": "blaze", "time_str": "10:20"}
-    elif predicted_color == "black":
-        match_round = {"number": 8, "source": "blaze", "time_str": "10:20"}
-    else:  # white
-        match_round = {"number": 0, "source": "blaze", "time_str": "10:20"}
-    
-    r = requests.post(f"{BASE_URL}/rounds", json=match_round)
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    log(f"Inserted matching round: {match_round}")
-    time.sleep(0.5)
-    
-    # Check active prediction
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    log(f"Active prediction: status={active['status']}, hit_at_gale={active.get('hit_at_gale')}")
-    assert active["status"] == "hit", f"Expected status=hit, got {active['status']}"
-    assert active["hit_at_gale"] == 0, f"Expected hit_at_gale=0, got {active['hit_at_gale']}"
-    log_success("HIT at gale 0 verified")
-    
-    # Check stats
-    r = requests.get(f"{BASE_URL}/predictions/stats")
-    assert r.status_code == 200, f"GET /predictions/stats failed: {r.status_code}"
-    stats = r.json()
-    log(f"Stats: total={stats['total']}, hits={stats['hits']}, by_gale={stats.get('by_gale', {})}")
-    assert stats["hits"] >= 1, f"Expected hits>=1, got {stats['hits']}"
-    assert "0" in stats.get("by_gale", {}), f"Expected '0' in by_gale, got {stats.get('by_gale', {})}"
-    assert stats["by_gale"]["0"] >= 1, f"Expected by_gale['0']>=1, got {stats['by_gale']['0']}"
-    log_success("Stats verified: hits incremented, by_gale contains '0'")
-    
-    log_success("HIT at gale 0 test passed")
-
-# ============================================================================
-# STEP 4: HIT at gale 1 (after one miss)
-# ============================================================================
-def test_active_prediction_hit_gale1():
-    log("\n=== STEP 4: Testing Active Prediction HIT at gale 1 ===")
-    
-    # Clear active prediction
-    r = requests.delete(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"DELETE /active-prediction failed: {r.status_code}"
-    log("Cleared active prediction")
-    
-    # Create new prediction
-    r = requests.post(f"{BASE_URL}/active-prediction?source=blaze")
-    assert r.status_code == 200, f"POST /active-prediction failed: {r.status_code}"
-    pred = r.json()
-    predicted_color = pred["predicted_color"]
-    log(f"Created prediction with color: {predicted_color}")
-    
-    # Insert one MISS round
-    if predicted_color == "red":
-        miss_round = {"number": 8, "source": "blaze", "time_str": "10:30"}  # black
-        match_round = {"number": 2, "source": "blaze", "time_str": "10:31"}  # red
-    elif predicted_color == "black":
-        miss_round = {"number": 2, "source": "blaze", "time_str": "10:30"}  # red
-        match_round = {"number": 8, "source": "blaze", "time_str": "10:31"}  # black
-    else:  # white
-        miss_round = {"number": 3, "source": "blaze", "time_str": "10:30"}  # red
-        match_round = {"number": 0, "source": "blaze", "time_str": "10:31"}  # white
-    
-    r = requests.post(f"{BASE_URL}/rounds", json=miss_round)
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    log(f"Inserted miss round: {miss_round}")
-    time.sleep(0.5)
-    
-    # Insert one MATCH round
-    r = requests.post(f"{BASE_URL}/rounds", json=match_round)
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    log(f"Inserted match round: {match_round}")
-    time.sleep(0.5)
-    
-    # Check active prediction
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    log(f"Active prediction: status={active['status']}, hit_at_gale={active.get('hit_at_gale')}")
-    assert active["status"] == "hit", f"Expected status=hit, got {active['status']}"
-    assert active["hit_at_gale"] == 1, f"Expected hit_at_gale=1, got {active['hit_at_gale']}"
-    log_success("HIT at gale 1 verified")
-    
-    log_success("HIT at gale 1 test passed")
-
-# ============================================================================
-# STEP 5: Auto-predict chain
-# ============================================================================
-def test_auto_predict_chain():
-    log("\n=== STEP 5: Testing Auto-predict chain ===")
-    
-    # Enable auto_predict
-    settings = {
-        "max_gales": 2,
-        "preferred_source": "blaze",
-        "auto_predict": True,
-        "skip_white_predictions": False
-    }
-    r = requests.put(f"{BASE_URL}/settings", json=settings)
-    assert r.status_code == 200, f"PUT /settings failed: {r.status_code}"
-    log("Enabled auto_predict=True")
-    
-    # Clear active prediction
-    r = requests.delete(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"DELETE /active-prediction failed: {r.status_code}"
-    
-    # Create new prediction
-    r = requests.post(f"{BASE_URL}/active-prediction?source=blaze")
-    assert r.status_code == 200, f"POST /active-prediction failed: {r.status_code}"
-    pred = r.json()
-    original_id = pred["id"]
-    predicted_color = pred["predicted_color"]
-    log(f"Created prediction with id={original_id}, color={predicted_color}")
-    
-    # Insert matching round to finish it
-    if predicted_color == "red":
-        match_round = {"number": 2, "source": "blaze", "time_str": "10:40"}
-    elif predicted_color == "black":
-        match_round = {"number": 8, "source": "blaze", "time_str": "10:40"}
-    else:  # white
-        match_round = {"number": 0, "source": "blaze", "time_str": "10:40"}
-    
-    r = requests.post(f"{BASE_URL}/rounds", json=match_round)
-    assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    log(f"Inserted matching round to finish prediction")
-    time.sleep(1)  # Give time for auto-predict to trigger
-    
-    # Check active prediction - should be a NEW one
-    r = requests.get(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"GET /active-prediction failed: {r.status_code}"
-    active = r.json()
-    log(f"Active prediction after auto-predict: id={active['id']}, status={active['status']}")
-    
-    # Verify it's a different prediction
-    if active["id"] == original_id:
-        # Could be the same if it's still showing the finished one
-        # Check if status is pending (new) or hit (old)
-        if active["status"] == "pending":
-            log_success("Auto-predict created new pending prediction (same id reused - unlikely but possible)")
+        
+        found_count = 0
+        missing = []
+        for expected in expected_names:
+            # Partial match for some names
+            if any(expected in name for name in rule_names):
+                found_count += 1
+            else:
+                missing.append(expected)
+        
+        if found_count >= 10:
+            result.add_pass("Verify Seeded Rules", f"Found {len(rules)} rules, matched {found_count} expected patterns")
         else:
-            log_error(f"Expected new pending prediction, but got status={active['status']} with same id")
-            # This might be timing issue - the new prediction might not be created yet
-            log("Waiting a bit more and retrying...")
-            time.sleep(2)
-            r = requests.get(f"{BASE_URL}/active-prediction")
-            active = r.json()
-            log(f"Retry: id={active['id']}, status={active['status']}")
-    
-    # The new prediction should be pending
-    assert active["status"] == "pending", f"Expected new prediction to be pending, got {active['status']}"
-    log_success(f"Auto-predict created new prediction with id={active['id']}, status=pending")
-    
-    log_success("Auto-predict chain test passed")
+            result.add_warning("Verify Seeded Rules", f"Only found {found_count} of expected rule patterns. Missing: {missing}")
 
 # ============================================================================
-# STEP 6: Skip white predictions
+# STEP 3: TEST PEDRA 14 (GATILHO ELITE) RULE
 # ============================================================================
-def test_skip_white():
-    log("\n=== STEP 6: Testing skip_white_predictions ===")
-    
-    # Set skip_white_predictions=True
-    settings = {
-        "max_gales": 2,
-        "preferred_source": "blaze",
-        "auto_predict": False,
-        "skip_white_predictions": True
-    }
-    r = requests.put(f"{BASE_URL}/settings", json=settings)
-    assert r.status_code == 200, f"PUT /settings failed: {r.status_code}"
-    log("Enabled skip_white_predictions=True")
-    
-    # Insert 8 rounds of mixed red/black (no white) to make algorithm want white
-    rounds = [
-        {"number": 2, "source": "blaze", "time_str": "11:00"},  # red
-        {"number": 8, "source": "blaze", "time_str": "11:01"},  # black
-        {"number": 3, "source": "blaze", "time_str": "11:02"},  # red
-        {"number": 9, "source": "blaze", "time_str": "11:03"},  # black
-        {"number": 4, "source": "blaze", "time_str": "11:04"},  # red
-        {"number": 10, "source": "blaze", "time_str": "11:05"}, # black
-        {"number": 5, "source": "blaze", "time_str": "11:06"},  # red
-        {"number": 11, "source": "blaze", "time_str": "11:07"}, # black
-    ]
-    for rd in rounds:
-        r = requests.post(f"{BASE_URL}/rounds", json=rd)
-        assert r.status_code == 200, f"POST /rounds failed: {r.status_code}"
-    log(f"Inserted {len(rounds)} rounds (no white)")
-    
-    # Clear active prediction
-    r = requests.delete(f"{BASE_URL}/active-prediction")
-    assert r.status_code == 200, f"DELETE /active-prediction failed: {r.status_code}"
-    
-    # Create new prediction
-    r = requests.post(f"{BASE_URL}/active-prediction?source=blaze")
-    assert r.status_code == 200, f"POST /active-prediction failed: {r.status_code}"
-    pred = r.json()
-    predicted_color = pred["predicted_color"]
-    log(f"Predicted color with skip_white=True: {predicted_color}")
-    
-    # Verify it's NOT white
-    assert predicted_color in ["red", "black"], f"Expected red or black, got {predicted_color}"
-    log_success(f"skip_white_predictions working: predicted {predicted_color} (not white)")
-    
-    log_success("Skip white test passed")
+print("\n" + "="*80)
+print("STEP 3: TEST PEDRA 14 (GATILHO ELITE) RULE")
+print("="*80)
 
-# ============================================================================
-# STEP 7: History and clear
-# ============================================================================
-def test_history():
-    log("\n=== STEP 7: Testing history endpoints ===")
-    
-    # GET history
-    r = requests.get(f"{BASE_URL}/active-prediction/history?limit=5")
-    assert r.status_code == 200, f"GET /active-prediction/history failed: {r.status_code}"
-    history = r.json()
-    log(f"GET /active-prediction/history: {len(history)} items")
-    assert isinstance(history, list), f"Expected list, got {type(history)}"
-    log_success(f"History returned {len(history)} finished predictions")
-    
-    # DELETE history
-    r = requests.delete(f"{BASE_URL}/active-prediction/history")
-    assert r.status_code == 200, f"DELETE /active-prediction/history failed: {r.status_code}"
-    result = r.json()
-    log(f"DELETE /active-prediction/history: {result}")
-    assert "deleted" in result, f"Expected 'deleted' in response, got {result}"
-    log_success(f"Deleted {result['deleted']} history items")
-    
-    # GET history again - should be empty
-    r = requests.get(f"{BASE_URL}/active-prediction/history")
-    assert r.status_code == 200, f"GET /active-prediction/history failed: {r.status_code}"
-    history = r.json()
-    assert len(history) == 0, f"Expected empty history, got {len(history)} items"
-    log_success("History is empty after clear")
-    
-    log_success("History tests passed")
+# Clean rounds first
+make_request("DELETE", "/rounds")
+make_request("DELETE", "/active-prediction")
 
-# ============================================================================
-# STEP 8: Existing endpoints regression
-# ============================================================================
-def test_existing_endpoints():
-    log("\n=== STEP 8: Testing existing endpoints regression ===")
+# Insert sequence: 9, 8, 10, 11, 14
+if not insert_rounds_sequence([9, 8, 10, 11, 14], "10:01"):
+    result.add_fail("Pedra 14 Test: Insert Rounds", "Failed to insert rounds")
+else:
+    result.add_pass("Pedra 14 Test: Insert Rounds", "Inserted sequence: 9, 8, 10, 11, 14")
     
-    # GET /predictions/stats - verify new fields
-    r = requests.get(f"{BASE_URL}/predictions/stats")
-    assert r.status_code == 200, f"GET /predictions/stats failed: {r.status_code}"
-    stats = r.json()
-    log(f"Stats: {json.dumps(stats, indent=2)}")
-    assert "by_gale" in stats, f"Expected 'by_gale' in stats"
-    assert "current_green_streak" in stats, f"Expected 'current_green_streak' in stats"
-    assert "current_red_streak" in stats, f"Expected 'current_red_streak' in stats"
-    log_success("Stats has new fields: by_gale, current_green_streak, current_red_streak")
-    
-    # GET /health (if exists)
-    try:
-        r = requests.get(f"{BASE_URL.replace('/api', '')}/health")
-        if r.status_code == 200:
-            log_success("GET /health works")
+    # POST /api/active-prediction?source=blaze
+    resp, err = make_request("POST", "/active-prediction?source=blaze")
+    if err:
+        result.add_fail("Pedra 14 Test: Create Prediction", f"Request failed: {err}")
+    elif resp.status_code != 200:
+        result.add_fail("Pedra 14 Test: Create Prediction", f"Status {resp.status_code}: {resp.text}")
+    else:
+        data = resp.json()
+        predicted_color = data.get("predicted_color")
+        rule_name = data.get("rule_name", "")
+        
+        if predicted_color == "white" and "Pedra 14" in rule_name:
+            result.add_pass("Pedra 14 Test: Prediction", f"Predicted white with rule: {rule_name}")
         else:
-            log(f"GET /health returned {r.status_code} (might not exist)")
-    except Exception as e:
-        log(f"GET /health not available: {e}")
-    
-    # GET /rounds
-    r = requests.get(f"{BASE_URL}/rounds?limit=10")
-    assert r.status_code == 200, f"GET /rounds failed: {r.status_code}"
-    rounds = r.json()
-    assert isinstance(rounds, list), f"Expected list, got {type(rounds)}"
-    log_success(f"GET /rounds works, returned {len(rounds)} rounds")
-    
-    # POST /predictions/log
-    log_data = {
-        "predicted_color": "red",
-        "actual_color": "black",
-        "source": "blaze",
-        "confidence": 75.0,
-        "note": "test log"
-    }
-    r = requests.post(f"{BASE_URL}/predictions/log", json=log_data)
-    assert r.status_code == 200, f"POST /predictions/log failed: {r.status_code}"
-    log_success("POST /predictions/log works")
-    
-    # POST /rounds/bulk - verify auto-advance triggers
-    bulk_data = {
-        "source": "blaze",
-        "rounds": [
-            {"number": 6, "time_str": "12:00"}
-        ]
-    }
-    r = requests.post(f"{BASE_URL}/rounds/bulk", json=bulk_data)
-    assert r.status_code == 200, f"POST /rounds/bulk failed: {r.status_code}"
-    result = r.json()
-    log(f"POST /rounds/bulk: {result}")
-    log_success("POST /rounds/bulk works (auto-advance should trigger)")
-    
-    log_success("All existing endpoints regression tests passed")
+            result.add_fail("Pedra 14 Test: Prediction", 
+                          f"Expected predicted_color='white' and rule_name containing 'Pedra 14', "
+                          f"got predicted_color='{predicted_color}', rule_name='{rule_name}'")
 
 # ============================================================================
-# Main test runner
+# STEP 4: TEST PEDRAS GÊMEAS RULE
 # ============================================================================
-def main():
-    log("Starting comprehensive backend tests for Bot Repertoire")
-    log(f"Base URL: {BASE_URL}")
-    
-    try:
-        # Step 0: Clear all data
-        clear_all_data()
-        
-        # Step 1: Settings
-        test_settings()
-        
-        # Step 2: Active Prediction LOSS
-        test_active_prediction_loss()
-        
-        # Step 3: HIT at gale 0
-        test_active_prediction_hit_gale0()
-        
-        # Step 4: HIT at gale 1
-        test_active_prediction_hit_gale1()
-        
-        # Step 5: Auto-predict chain
-        test_auto_predict_chain()
-        
-        # Step 6: Skip white
-        test_skip_white()
-        
-        # Step 7: History
-        test_history()
-        
-        # Step 8: Existing endpoints
-        test_existing_endpoints()
-        
-        log("\n" + "="*70)
-        log_success("ALL TESTS PASSED!")
-        log("="*70)
-        
-    except AssertionError as e:
-        log_error(f"Test failed: {e}")
-        raise
-    except Exception as e:
-        log_error(f"Unexpected error: {e}")
-        raise
+print("\n" + "="*80)
+print("STEP 4: TEST PEDRAS GÊMEAS (TWIN STONES) RULE")
+print("="*80)
 
-if __name__ == "__main__":
-    main()
+make_request("DELETE", "/active-prediction")
+make_request("DELETE", "/rounds")
+
+# Insert sequence: 9, 3, 7, 5, 5 (twin at the end)
+if not insert_rounds_sequence([9, 3, 7, 5, 5], "10:01"):
+    result.add_fail("Pedras Gêmeas Test: Insert Rounds", "Failed to insert rounds")
+else:
+    result.add_pass("Pedras Gêmeas Test: Insert Rounds", "Inserted sequence: 9, 3, 7, 5, 5")
+    
+    resp, err = make_request("POST", "/active-prediction?source=blaze")
+    if err:
+        result.add_fail("Pedras Gêmeas Test: Create Prediction", f"Request failed: {err}")
+    elif resp.status_code != 200:
+        result.add_fail("Pedras Gêmeas Test: Create Prediction", f"Status {resp.status_code}: {resp.text}")
+    else:
+        data = resp.json()
+        predicted_color = data.get("predicted_color")
+        rule_name = data.get("rule_name", "")
+        
+        if predicted_color == "white" and "Gêmeas" in rule_name:
+            result.add_pass("Pedras Gêmeas Test: Prediction", f"Predicted white with rule: {rule_name}")
+        else:
+            result.add_fail("Pedras Gêmeas Test: Prediction",
+                          f"Expected predicted_color='white' and rule_name containing 'Gêmeas', "
+                          f"got predicted_color='{predicted_color}', rule_name='{rule_name}'")
+
+# ============================================================================
+# STEP 5: TEST SKIP RULE (PEDRAS BAIXAS - RESFRIAMENTO)
+# ============================================================================
+print("\n" + "="*80)
+print("STEP 5: TEST SKIP RULE (PEDRAS BAIXAS - RESFRIAMENTO)")
+print("="*80)
+
+make_request("DELETE", "/active-prediction")
+make_request("DELETE", "/rounds")
+
+# Insert sequence: 9, 8, 1, 2, 3 (three low stones at the end)
+if not insert_rounds_sequence([9, 8, 1, 2, 3], "10:01"):
+    result.add_fail("Skip Rule Test: Insert Rounds", "Failed to insert rounds")
+else:
+    result.add_pass("Skip Rule Test: Insert Rounds", "Inserted sequence: 9, 8, 1, 2, 3")
+    
+    resp, err = make_request("POST", "/active-prediction?source=blaze")
+    if err:
+        result.add_fail("Skip Rule Test: Create Prediction", f"Request failed: {err}")
+    elif resp.status_code == 400:
+        # Expected: 400 error when skip rule blocks prediction
+        result.add_pass("Skip Rule Test: Prediction Blocked", f"Got expected 400 error: {resp.text}")
+    elif resp.status_code == 200:
+        # Check if prediction was NOT created (None response)
+        data = resp.json()
+        if data is None or not data:
+            result.add_pass("Skip Rule Test: Prediction Blocked", "No prediction created (skip rule active)")
+        else:
+            result.add_fail("Skip Rule Test: Prediction Blocked",
+                          f"Expected 400 or no prediction, but got 200 with data: {data}")
+    else:
+        result.add_fail("Skip Rule Test: Prediction Blocked",
+                      f"Unexpected status {resp.status_code}: {resp.text}")
+
+# ============================================================================
+# STEP 6: TEST COMBO (12/14 + 4 SAME COLOR)
+# ============================================================================
+print("\n" + "="*80)
+print("STEP 6: TEST COMBO (12/14 + 4 SAME COLOR)")
+print("="*80)
+
+make_request("DELETE", "/active-prediction")
+make_request("DELETE", "/rounds")
+
+# Insert sequence: 9 (black), 8 (black), 10 (black), 11 (black), 12 (red)
+# 4 blacks followed by 12 (which is red)
+if not insert_rounds_sequence([9, 8, 10, 11, 12], "10:01"):
+    result.add_fail("Combo Test: Insert Rounds", "Failed to insert rounds")
+else:
+    result.add_pass("Combo Test: Insert Rounds", "Inserted sequence: 9, 8, 10, 11, 12 (4 blacks + 12)")
+    
+    # First check with /rules/evaluate
+    resp, err = make_request("GET", "/rules/evaluate?source=blaze")
+    if err:
+        result.add_warning("Combo Test: Evaluate Rules", f"Request failed: {err}")
+    elif resp.status_code != 200:
+        result.add_warning("Combo Test: Evaluate Rules", f"Status {resp.status_code}: {resp.text}")
+    else:
+        data = resp.json()
+        if data.get("matched"):
+            rule = data.get("rule", {})
+            rule_name = rule.get("name", "")
+            if "Combo" in rule_name and "pretos" in rule_name:
+                result.add_pass("Combo Test: Rule Evaluation", f"Matched combo rule: {rule_name}")
+            else:
+                result.add_warning("Combo Test: Rule Evaluation", 
+                                 f"Matched rule but not combo: {rule_name}")
+        else:
+            result.add_warning("Combo Test: Rule Evaluation", "No rule matched")
+    
+    # Now create prediction
+    resp, err = make_request("POST", "/active-prediction?source=blaze")
+    if err:
+        result.add_fail("Combo Test: Create Prediction", f"Request failed: {err}")
+    elif resp.status_code != 200:
+        result.add_fail("Combo Test: Create Prediction", f"Status {resp.status_code}: {resp.text}")
+    else:
+        data = resp.json()
+        rule_name = data.get("rule_name", "")
+        
+        if "Combo" in rule_name and "pretos" in rule_name:
+            result.add_pass("Combo Test: Prediction", f"Used combo rule: {rule_name}")
+        else:
+            result.add_fail("Combo Test: Prediction",
+                          f"Expected rule_name containing 'Combo' and 'pretos', got: {rule_name}")
+
+# ============================================================================
+# STEP 7: TEST WHITE-FORECAST
+# ============================================================================
+print("\n" + "="*80)
+print("STEP 7: TEST WHITE-FORECAST")
+print("="*80)
+
+make_request("DELETE", "/rounds")
+
+# Insert chronologically (oldest first): 5, 9, 11, 7
+# Then insert white round at 10:22
+# Then insert 7 after white
+rounds_to_insert = [
+    (5, "10:18"),
+    (9, "10:19"),
+    (11, "10:20"),
+    (7, "10:21"),
+    (0, "10:22"),  # white
+    (7, "10:23"),  # stone after white
+]
+
+success = True
+for num, time_str in rounds_to_insert:
+    if not insert_round(num, time_str):
+        success = False
+        break
+
+if not success:
+    result.add_fail("White-Forecast Test: Insert Rounds", "Failed to insert rounds")
+else:
+    result.add_pass("White-Forecast Test: Insert Rounds", "Inserted sequence with white at 10:22")
+    
+    resp, err = make_request("GET", "/white-forecast?source=blaze")
+    if err:
+        result.add_fail("White-Forecast Test: Get Forecast", f"Request failed: {err}")
+    elif resp.status_code != 200:
+        result.add_fail("White-Forecast Test: Get Forecast", f"Status {resp.status_code}: {resp.text}")
+    else:
+        data = resp.json()
+        
+        # Verify fields
+        checks = []
+        
+        last_white_time = data.get("last_white_time")
+        if last_white_time == "10:22":
+            checks.append("✓ last_white_time = 10:22")
+        else:
+            checks.append(f"✗ last_white_time = {last_white_time} (expected 10:22)")
+        
+        last_white_terminal = data.get("last_white_terminal")
+        if last_white_terminal == 2:
+            checks.append("✓ last_white_terminal = 2")
+        else:
+            checks.append(f"✗ last_white_terminal = {last_white_terminal} (expected 2)")
+        
+        mirror_terminal = data.get("mirror_terminal")
+        if mirror_terminal == 7:
+            checks.append("✓ mirror_terminal = 7")
+        else:
+            checks.append(f"✗ mirror_terminal = {mirror_terminal} (expected 7)")
+        
+        next_stone_after_white = data.get("next_stone_after_white")
+        if next_stone_after_white == 7:
+            checks.append("✓ next_stone_after_white = 7")
+        else:
+            checks.append(f"✗ next_stone_after_white = {next_stone_after_white} (expected 7)")
+        
+        targets = data.get("targets", [])
+        if len(targets) >= 4:
+            checks.append(f"✓ targets array has {len(targets)} items (>= 4)")
+            
+            # Check for specific target types
+            target_types = [t.get("type") for t in targets]
+            
+            if "sniper_short" in target_types:
+                sniper = next(t for t in targets if t.get("type") == "sniper_short")
+                if sniper.get("time_str") == "10:27" and sniper.get("minutes_ahead") == 5:
+                    checks.append("✓ sniper_short target: 10:27, 5 min ahead")
+                else:
+                    checks.append(f"✗ sniper_short: {sniper.get('time_str')}, {sniper.get('minutes_ahead')} min")
+            else:
+                checks.append("✗ sniper_short target not found")
+            
+            if "elite_long" in target_types:
+                elite = next(t for t in targets if t.get("type") == "elite_long")
+                # Should be around 10:37 (15 min ahead, but could be 11 min for elite_long)
+                checks.append(f"✓ elite_long target: {elite.get('time_str')}, {elite.get('minutes_ahead')} min ahead")
+            else:
+                checks.append("✗ elite_long target not found")
+            
+            soma_targets = [t for t in targets if t.get("type") == "soma_rastro"]
+            if soma_targets:
+                soma = soma_targets[0]
+                if soma.get("time_str") == "10:29" and soma.get("minutes_ahead") == 7:
+                    checks.append("✓ soma_rastro target: 10:29, 7 min ahead")
+                else:
+                    checks.append(f"✗ soma_rastro: {soma.get('time_str')}, {soma.get('minutes_ahead')} min")
+            else:
+                checks.append("✗ soma_rastro target not found")
+            
+            soma_double_targets = [t for t in targets if t.get("type") == "soma_rastro_double"]
+            if soma_double_targets:
+                soma_double = soma_double_targets[0]
+                if soma_double.get("time_str") == "10:36" and soma_double.get("minutes_ahead") == 14:
+                    checks.append("✓ soma_rastro_double target: 10:36, 14 min ahead")
+                else:
+                    checks.append(f"✗ soma_rastro_double: {soma_double.get('time_str')}, {soma_double.get('minutes_ahead')} min")
+            else:
+                checks.append("✗ soma_rastro_double target not found")
+        else:
+            checks.append(f"✗ targets array has only {len(targets)} items (expected >= 4)")
+        
+        # Determine pass/fail
+        failed_checks = [c for c in checks if c.startswith("✗")]
+        if not failed_checks:
+            result.add_pass("White-Forecast Test: Forecast Data", "\n   ".join(checks))
+        else:
+            result.add_fail("White-Forecast Test: Forecast Data", "\n   ".join(checks))
+
+# ============================================================================
+# STEP 8: WHITE-FORECAST EDGE CASES
+# ============================================================================
+print("\n" + "="*80)
+print("STEP 8: WHITE-FORECAST EDGE CASES")
+print("="*80)
+
+# Test 8a: Empty database
+make_request("DELETE", "/rounds")
+
+resp, err = make_request("GET", "/white-forecast?source=blaze")
+if err:
+    result.add_fail("White-Forecast Edge: Empty DB", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("White-Forecast Edge: Empty DB", f"Status {resp.status_code}: {resp.text}")
+else:
+    data = resp.json()
+    notes = data.get("notes", "")
+    targets = data.get("targets", [])
+    
+    if "Sem rodadas" in notes and len(targets) == 0:
+        result.add_pass("White-Forecast Edge: Empty DB", f"Correct response: {notes}")
+    else:
+        result.add_fail("White-Forecast Edge: Empty DB",
+                      f"Expected notes about 'Sem rodadas' and empty targets, got: {data}")
+
+# Test 8b: Rounds but no white
+insert_rounds_sequence([9, 8, 10, 11, 12], "10:01")
+
+resp, err = make_request("GET", "/white-forecast?source=blaze")
+if err:
+    result.add_fail("White-Forecast Edge: No White", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("White-Forecast Edge: No White", f"Status {resp.status_code}: {resp.text}")
+else:
+    data = resp.json()
+    notes = data.get("notes", "")
+    targets = data.get("targets", [])
+    
+    if "Nenhum branco" in notes and len(targets) == 0:
+        result.add_pass("White-Forecast Edge: No White", f"Correct response: {notes}")
+    else:
+        result.add_fail("White-Forecast Edge: No White",
+                      f"Expected notes about 'Nenhum branco' and empty targets, got: {data}")
+
+# ============================================================================
+# STEP 9: REGRESSION - EXISTING ENDPOINTS
+# ============================================================================
+print("\n" + "="*80)
+print("STEP 9: REGRESSION TEST - EXISTING ENDPOINTS")
+print("="*80)
+
+endpoints_to_test = [
+    ("GET", "/settings"),
+    ("GET", "/active-prediction"),
+    ("GET", "/predictions/stats"),
+    ("GET", "/rules"),
+    ("GET", "/rules/evaluate?source=blaze"),
+]
+
+for method, endpoint in endpoints_to_test:
+    resp, err = make_request(method, endpoint)
+    if err:
+        result.add_fail(f"Regression: {method} {endpoint}", f"Request failed: {err}")
+    elif resp.status_code != 200:
+        result.add_fail(f"Regression: {method} {endpoint}", f"Status {resp.status_code}: {resp.text}")
+    else:
+        result.add_pass(f"Regression: {method} {endpoint}", "Endpoint working")
+
+# ============================================================================
+# STEP 10: IDEMPOTENCY OF SEED
+# ============================================================================
+print("\n" + "="*80)
+print("STEP 10: IDEMPOTENCY OF SEED")
+print("="*80)
+
+# Test 10a: Seed without replace (should skip existing)
+resp, err = make_request("POST", "/rules/seed-pedras?replace=false")
+if err:
+    result.add_fail("Idempotency: Seed without replace", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Idempotency: Seed without replace", f"Status {resp.status_code}: {resp.text}")
+else:
+    data = resp.json()
+    inserted = data.get("inserted", 0)
+    skipped = data.get("skipped_existing", 0)
+    
+    if inserted == 0 and skipped >= 14:
+        result.add_pass("Idempotency: Seed without replace", 
+                       f"Correctly skipped existing: inserted={inserted}, skipped={skipped}")
+    else:
+        result.add_fail("Idempotency: Seed without replace",
+                      f"Expected inserted=0 and skipped>=14, got inserted={inserted}, skipped={skipped}")
+
+# Test 10b: Seed with replace (should replace all)
+resp, err = make_request("POST", "/rules/seed-pedras?replace=true")
+if err:
+    result.add_fail("Idempotency: Seed with replace", f"Request failed: {err}")
+elif resp.status_code != 200:
+    result.add_fail("Idempotency: Seed with replace", f"Status {resp.status_code}: {resp.text}")
+else:
+    data = resp.json()
+    inserted = data.get("inserted", 0)
+    
+    if inserted >= 14:
+        result.add_pass("Idempotency: Seed with replace", f"Correctly replaced: inserted={inserted}")
+    else:
+        result.add_fail("Idempotency: Seed with replace",
+                      f"Expected inserted>=14, got inserted={inserted}")
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+print("\n")
+success = result.summary()
+
+if success:
+    print("\n🎉 ALL TESTS PASSED!")
+    exit(0)
+else:
+    print("\n💥 SOME TESTS FAILED - See details above")
+    exit(1)

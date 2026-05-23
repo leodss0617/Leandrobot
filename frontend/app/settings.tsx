@@ -255,6 +255,9 @@ export default function SettingsScreen() {
       </View>
 
       <View style={styles.card}>
+        <View style={styles.headerRow}>
+          <Text style={styles.headerEmoji}>💾</Text>
+          <Text style={styles.cardTitle}>Rodadas armazenadas</Text>
         </View>
         {loading ? (
           <ActivityIndicator color="#FF1F1F" style={{ marginVertical: 14 }} />
