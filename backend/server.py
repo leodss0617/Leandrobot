@@ -177,30 +177,59 @@ async def add_rounds_bulk(payload: BulkRoundsIn):
     duplicates = 0
 
     # Ordena as rodadas recebidas: mais nova primeiro (por time_str desc).
-    # Se time_str for igual, mantém a ordem recebida do scraper.
     def sort_key(r: RoundIn):
         m = time_str_to_minutes(r.time_str)
         sec = int(r.seconds) if r.seconds and r.seconds.isdigit() else 0
         return (m if m is not None else -1, sec)
 
-    # Maior tempo (mais novo) primeiro
     sorted_rounds = sorted(payload.rounds, key=sort_key, reverse=True)
 
-    # Atribui captured_at decrescentes para preservar a ordem cronológica
-    # na listagem (que ordena por captured_at desc).
+    # Blaze Double tem ~2 rodadas por minuto. Quando o site exibe apenas HH:MM
+    # (sem segundos), permitimos ate MAX_PER_MINUTE rodadas com a mesma
+    # combinacao (source, number, time_str) para nao perder rodadas legitimas.
+    MAX_PER_MINUTE = 2
+
+    from collections import defaultdict
+    batch_count: dict = defaultdict(int)
+
+    # Snapshot dos contadores ja existentes no banco (uma unica leitura por key),
+    # para evitar que itens recem inseridos no MESMO batch sejam contados.
+    initial_counts: dict = {}
+    seen_keys: set = set()
+    for r in sorted_rounds:
+        if not r.seconds:
+            seen_keys.add((payload.source, r.number, r.time_str))
+    for src, num, ts in seen_keys:
+        initial_counts[(src, num, ts)] = await db.rounds.count_documents({
+            "source": src,
+            "number": num,
+            "time_str": ts,
+            "seconds": None,
+        })
+
     base = datetime.now(timezone.utc)
     for idx, r in enumerate(sorted_rounds):
         color = r.color or color_for_number(r.number)
-        dedupe = {
-            "source": payload.source,
-            "number": r.number,
-            "time_str": r.time_str,
-            "seconds": r.seconds,
-        }
-        existing = await db.rounds.find_one(dedupe, {"_id": 0, "id": 1})
-        if existing:
-            duplicates += 1
-            continue
+
+        if r.seconds:
+            dedupe = {
+                "source": payload.source,
+                "number": r.number,
+                "time_str": r.time_str,
+                "seconds": r.seconds,
+            }
+            existing = await db.rounds.find_one(dedupe, {"_id": 0, "id": 1})
+            if existing:
+                duplicates += 1
+                continue
+        else:
+            key = (payload.source, r.number, r.time_str)
+            total = initial_counts.get(key, 0) + batch_count[key]
+            if total >= MAX_PER_MINUTE:
+                duplicates += 1
+                continue
+            batch_count[key] += 1
+
         captured_at = base - timedelta(milliseconds=idx)
         obj = Round(
             number=r.number,
