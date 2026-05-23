@@ -1,6 +1,8 @@
 // Coletor Automático: roda no próprio celular do usuário (IP brasileiro)
 // e chama a API da Blaze diretamente. Funciona 24/7 enquanto o app
 // estiver aberto. Usa expo-keep-awake para não deixar a tela dormir.
+// Em Custom Dev Build (EAS), também registra expo-background-fetch
+// + notificação persistente (foreground service) p/ rodar com tela apagada.
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
@@ -17,6 +19,16 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as KeepAwake from "expo-keep-awake";
 import { collectOnce, CollectResult } from "../src/blazeCollector";
+import {
+  registerBackgroundFetch,
+  unregisterBackgroundFetch,
+  isBackgroundFetchRegistered,
+  showPersistentNotification,
+  updatePersistentNotification,
+  dismissPersistentNotification,
+  requestNotificationPermissions,
+  setupNotificationChannel,
+} from "../src/backgroundCollector";
 
 const POLL_INTERVAL_MS = 5000; // 5 segundos
 const KEEP_AWAKE_TAG = "blaze-auto-collector";
@@ -31,6 +43,8 @@ export default function AutoCollectorScreen() {
   const insets = useSafeAreaInsets();
   const [active, setActive] = useState(false);
   const [keepScreenOn, setKeepScreenOn] = useState(true);
+  const [backgroundMode, setBackgroundMode] = useState(true);
+  const [bgRegistered, setBgRegistered] = useState(false);
   const [stats, setStats] = useState({
     cycles: 0,
     inserted: 0,
@@ -54,6 +68,12 @@ export default function AutoCollectorScreen() {
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s) => setAppState(s));
     return () => sub.remove();
+  }, []);
+
+  // ----- Inicializa canal de notificacao + checa registro de background -----
+  useEffect(() => {
+    setupNotificationChannel().catch(() => {});
+    isBackgroundFetchRegistered().then(setBgRegistered).catch(() => {});
   }, []);
 
   // ----- Keep awake (impede a tela de dormir) -----
@@ -125,6 +145,23 @@ export default function AutoCollectorScreen() {
     }
     if (active) {
       addLog("▶ Coletor ATIVADO (5s)", "info");
+      // ---- Background fetch + notificacao persistente (foreground service) ----
+      if (backgroundMode) {
+        (async () => {
+          const granted = await requestNotificationPermissions();
+          if (!granted) {
+            addLog("⚠ Permissao de notificacao negada — background limitado", "warn");
+          }
+          await showPersistentNotification("🔴 Coletor ATIVO · aguardando rodadas...");
+          const reg = await registerBackgroundFetch();
+          if (reg.ok) {
+            setBgRegistered(true);
+            addLog("☁ Background fetch registrado (intervalo ~15min mínimo)", "ok");
+          } else {
+            addLog(`⚠ Background fetch falhou: ${reg.error}`, "warn");
+          }
+        })();
+      }
       // dispara imediato
       tick();
       intervalRef.current = setInterval(() => {
@@ -132,13 +169,28 @@ export default function AutoCollectorScreen() {
       }, POLL_INTERVAL_MS);
     } else {
       addLog("■ Coletor parado", "info");
+      // Limpa background fetch + notificacao
+      (async () => {
+        await unregisterBackgroundFetch();
+        await dismissPersistentNotification();
+        setBgRegistered(false);
+      })();
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [active, backgroundMode]);
+
+  // ----- Atualiza a notificacao persistente com o status atual -----
+  useEffect(() => {
+    if (!active || !backgroundMode) return;
+    const text = stats.blocked
+      ? "⛔ API bloqueada — verifique sua rede BR"
+      : `🟢 ${stats.cycles} ciclos · ${stats.inserted} novas · ${stats.duplicates} dup`;
+    updatePersistentNotification(text).catch(() => {});
+  }, [stats, active, backgroundMode]);
 
   const secondsSince = lastAt ? Math.floor((Date.now() - lastAt) / 1000) : null;
 
@@ -201,6 +253,22 @@ export default function AutoCollectorScreen() {
             testID="keep-awake-switch"
           />
         </View>
+
+        <View style={styles.optionRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.optionLabel}>Modo Segundo Plano</Text>
+            <Text style={styles.optionHint}>
+              Notificação fixa + background fetch (~15min){bgRegistered ? " · ATIVO" : ""}
+            </Text>
+          </View>
+          <Switch
+            value={backgroundMode}
+            onValueChange={setBackgroundMode}
+            trackColor={{ true: "#FF1F1F", false: "#333" }}
+            thumbColor={backgroundMode ? "#fff" : "#888"}
+            testID="background-mode-switch"
+          />
+        </View>
       </View>
 
       {/* ---------- STATS GRID ---------- */}
@@ -248,13 +316,19 @@ export default function AutoCollectorScreen() {
       <View style={styles.tipsCard}>
         <Text style={styles.tipsTitle}>💡 Como manter rodando 24/7</Text>
         <Text style={styles.tipsItem}>
-          • Deixe o app aberto nessa tela com <Text style={styles.b}>{"\"Manter tela acordada\""}</Text> ligado.
+          • Ligue <Text style={styles.b}>Modo Segundo Plano</Text> + permita notificações ao iniciar.
+        </Text>
+        <Text style={styles.tipsItem}>
+          • A notificação fixa <Text style={styles.b}>{"\"Coletor Blaze\""}</Text> indica que o serviço está vivo. Não feche.
         </Text>
         <Text style={styles.tipsItem}>
           • Plugue o celular no carregador para não esgotar a bateria.
         </Text>
         <Text style={styles.tipsItem}>
-          • {Platform.OS === "ios" ? "iOS pausa apps em segundo plano após ~30s. Deixe esta tela em primeiro plano." : "No Android, retire o app das restrições de bateria nas configurações."}
+          • {Platform.OS === "ios" ? "iOS: o sistema decide quando rodar background fetch (~15min+)." : "Android: retire o app das restrições de bateria (Configurações → Apps → Coletor Blaze → Bateria → Sem restrições)."}
+        </Text>
+        <Text style={styles.tipsItem}>
+          • Funciona em <Text style={styles.b}>EAS Build (custom dev client)</Text>. No Expo Go, só o modo foreground funciona.
         </Text>
         <Text style={styles.tipsItem}>
           • Estado do app: <Text style={styles.b}>{appState}</Text>
@@ -325,6 +399,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   optionLabel: { color: "#ddd", fontSize: 13, fontWeight: "600" },
+  optionHint: { color: "#777", fontSize: 11, marginTop: 2 },
   statsRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 14 },
   statBlock: {
     flex: 1,
