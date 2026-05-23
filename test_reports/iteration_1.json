@@ -1,0 +1,41 @@
+{
+  "summary": "Backend regression for Blaze auto-collector flow. Ran 24 pytest tests (14 pre-existing + 10 new for source=blaze and active-prediction lifecycle). All 24 PASSED. Endpoints validated: POST /api/rounds/bulk (color inference, seconds-strict dedupe, MAX_PER_MINUTE=2 dedupe without seconds), GET /api/rounds?source=blaze (newest-first, no _id leak), DELETE /api/rounds?source=blaze (scoped), GET /api/stats?source=blaze (shape + streak + last_white_ago + hot_numbers), GET /api/poll-status (response shape), GET /api/prediction?source=blaze (anchor + scores), and Active Prediction lifecycle (create / get / cancel / 400 when history <5).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/poll-status", "issue": "When upstream DNS resolution fails (US backend can't resolve blaze.com), status='error' but blocked=false. Frontend that only checks `blocked` will treat this as healthy. Consider treating any non-200 / DNS error as blocked=true so the mobile fallback UI activates correctly."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_blaze_api.py",
+    "/app/backend/tests/test_blaze_source.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) In poll_blaze(), set _poll_status['blocked']=true when ALL upstream URLs fail (including DNS/connection errors), not only on HTTP 451 — this matches the user intent (geo-block fallback).",
+    "(Optional) Add an HTTP/2 or User-Agent rotation list for the poller, although mobile-side collection is the agreed solution."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~1850+ lines monolithic — recommend splitting into modules (rounds, predictions, rules, poller, models) for maintainability (>700-line threshold).",
+    "BulkRoundsIn.rounds has no upper bound; consider Field(max_length=500) to prevent memory abuse on POST /rounds/bulk.",
+    "_advance_active_prediction logs last_actual using the LAST checked round; if checked_round_ids is large the reversed iteration is fine, but logic only records ONE log entry per finished prediction — acceptable, just worth noting.",
+    "MAX_PER_MINUTE=2 is a magic constant — extract to module-level CONST with comment (already commented but value is hardcoded).",
+    "poll-status: 'blocked' boolean is set only on HTTP 451; DNS / connection errors leave blocked=false — UX-inconsistent with the feature's intent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_blaze_source.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (mobile-only, not tested per request)"},
+  "test_credentials": "none (no auth on these endpoints)",
+  "seed_data_creation": "All test data is created and torn down per-test via DELETE /api/rounds?source=<x>. No persistent seed left.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use pytest at /app/backend/tests/ (conftest.py loads EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env). test_blaze_api.py covers tipminer/megatroia/manual flows; test_blaze_source.py covers the new blaze source + poll-status + active-prediction lifecycle. Backend can't reach blaze.com (DNS error) — this is expected; the mobile (Expo) auto.tsx screen fetches Blaze from the user's BR-IP device and POSTs to /api/rounds/bulk. Frontend is Expo/React Native and cannot be e2e tested in this env (no Expo runtime).",
+  "rca of the issue": "Not applicable — no bug found. Only a minor inconsistency: /api/poll-status reports `blocked=false` when the upstream Blaze hostname fails DNS resolution. The boolean is only flipped to true on HTTP 451. Fix would be in poll_blaze() inside server.py: after the try/except for httpx errors, if no URL succeeded and exception was a connection/DNS error, set _poll_status['blocked']=True."
+}
