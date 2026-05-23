@@ -65,6 +65,39 @@ export interface PredictionStats {
   color_misses: number;
   white_hits: number;
   white_misses: number;
+  by_gale: Record<string, number>;
+  current_green_streak: number;
+  current_red_streak: number;
+}
+
+export interface UserSettings {
+  max_gales: number;
+  preferred_source: SourceType;
+  auto_predict: boolean;
+  skip_white_predictions: boolean;
+}
+
+export type ActivePredStatus = "pending" | "hit" | "loss" | "cancelled";
+
+export interface ActivePrediction {
+  id: string;
+  source: SourceType;
+  predicted_color: ColorType;
+  max_gales: number;
+  current_gale: number;
+  status: ActivePredStatus;
+  anchor_round_id?: string | null;
+  anchor_number?: number | null;
+  anchor_color?: ColorType | null;
+  anchor_time_str?: string | null;
+  checked_round_ids: string[];
+  hit_at_gale?: number | null;
+  confidence?: number | null;
+  rationale?: string | null;
+  rule_name?: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string | null;
 }
 
 export interface SimulateResult {
@@ -229,6 +262,57 @@ export async function evaluateRules(source?: SourceType, window = 30): Promise<R
   if (source) p.append("source", source);
   p.append("window", String(window));
   const res = await fetch(`${API_BASE}/rules/evaluate?${p}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// ---------------- Settings ----------------
+export async function getSettings(): Promise<UserSettings> {
+  const res = await fetch(`${API_BASE}/settings`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function updateSettings(s: UserSettings): Promise<UserSettings> {
+  const res = await fetch(`${API_BASE}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(s),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ---------------- Active Prediction ----------------
+export async function getActivePrediction(): Promise<ActivePrediction | null> {
+  const res = await fetch(`${API_BASE}/active-prediction`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function createActivePrediction(source?: SourceType, max_gales?: number): Promise<ActivePrediction> {
+  const p = new URLSearchParams();
+  if (source) p.append("source", source);
+  if (max_gales !== undefined) p.append("max_gales", String(max_gales));
+  const res = await fetch(`${API_BASE}/active-prediction?${p}`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function cancelActivePrediction(): Promise<{ cancelled: number }> {
+  const res = await fetch(`${API_BASE}/active-prediction`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getActivePredictionHistory(limit = 20): Promise<ActivePrediction[]> {
+  const res = await fetch(`${API_BASE}/active-prediction/history?limit=${limit}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function clearActivePredictionHistory(): Promise<{ deleted: number }> {
+  const res = await fetch(`${API_BASE}/active-prediction/history`, { method: "DELETE" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

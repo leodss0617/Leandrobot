@@ -66,6 +66,15 @@ export default function RootLayout() {
               }}
             />
             <Drawer.Screen
+              name="bot"
+              options={{
+                title: "Bot",
+                drawerLabel: "🤖  Bot (Gales)",
+                headerTitle: "Bot · Previsão + Gales",
+                drawerIcon: ({ color }) => <Item emoji="🤖" color={color} />,
+              }}
+            />
+            <Drawer.Screen
               name="history"
               options={{
                 title: "Histórico",

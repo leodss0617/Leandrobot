@@ -137,6 +137,8 @@ class PredictionLog(BaseModel):
     source: Optional[SourceLiteral] = None
     confidence: Optional[float] = None
     note: Optional[str] = None
+    hit_at_gale: Optional[int] = None  # se acertou, em qual gale (0,1,2..)
+    max_gales: Optional[int] = None
     logged_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -149,6 +151,42 @@ class PredictionStats(BaseModel):
     color_misses: int
     white_hits: int
     white_misses: int
+    by_gale: dict = Field(default_factory=dict)  # {"0": hits, "1": hits, "2": hits, ...}
+    current_green_streak: int = 0
+    current_red_streak: int = 0
+
+
+# ---------------- User Settings ----------------
+class UserSettings(BaseModel):
+    max_gales: int = 2
+    preferred_source: SourceLiteral = "blaze"
+    auto_predict: bool = True
+    skip_white_predictions: bool = False  # se True, ignora previsoes de branco
+
+
+# ---------------- Active Prediction (single, with gale chain) ----------------
+ActivePredStatus = Literal["pending", "hit", "loss", "cancelled"]
+
+
+class ActivePrediction(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source: SourceLiteral
+    predicted_color: ColorLiteral
+    max_gales: int = 2
+    current_gale: int = 0  # 0 = entrada inicial, 1 = G1, 2 = G2, ...
+    status: ActivePredStatus = "pending"
+    anchor_round_id: Optional[str] = None
+    anchor_number: Optional[int] = None
+    anchor_color: Optional[ColorLiteral] = None
+    anchor_time_str: Optional[str] = None
+    checked_round_ids: List[str] = Field(default_factory=list)  # rounds avaliados nesta tentativa
+    hit_at_gale: Optional[int] = None  # em qual gale acertou (se status=hit)
+    confidence: Optional[float] = None
+    rationale: Optional[str] = None
+    rule_name: Optional[str] = None  # se veio de uma regra
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    finished_at: Optional[datetime] = None
 
 
 # ---------------- Helpers ----------------
@@ -244,6 +282,12 @@ async def add_rounds_bulk(payload: BulkRoundsIn):
         inserted += 1
 
     total = await db.rounds.count_documents({})
+    # Apos inserir rodadas novas, avalia a previsao pendente (auto-advance)
+    if inserted > 0:
+        try:
+            await _advance_active_prediction()
+        except Exception as e:
+            logger.warning(f"advance after bulk insert failed: {e}")
     return BulkResult(inserted=inserted, duplicates=duplicates, total=total)
 
 
@@ -497,7 +541,7 @@ async def predictions_stats(source: Optional[SourceLiteral] = None):
     q: dict = {}
     if source:
         q["source"] = source
-    docs = await db.prediction_logs.find(q, {"_id": 0}).to_list(length=5000)
+    docs = await db.prediction_logs.find(q, {"_id": 0}).sort("logged_at", -1).to_list(length=5000)
     total = len(docs)
     hits = sum(1 for d in docs if d.get("is_hit"))
     misses = total - hits
@@ -506,6 +550,29 @@ async def predictions_stats(source: Optional[SourceLiteral] = None):
     white_hits = sum(1 for d in docs if d.get("is_hit") and d.get("predicted_color") == "white")
     white_misses = sum(1 for d in docs if not d.get("is_hit") and d.get("predicted_color") == "white")
     hit_rate = round(hits / total * 100, 1) if total else 0.0
+
+    # Breakdown por gale (hit_at_gale)
+    by_gale: dict = {}
+    for d in docs:
+        if d.get("is_hit"):
+            g = d.get("hit_at_gale", 0) or 0
+            key = str(g)
+            by_gale[key] = by_gale.get(key, 0) + 1
+
+    # Sequencias (greens/reds em sequencia) sobre os logs mais recentes
+    current_green = 0
+    current_red = 0
+    for d in docs:
+        if d.get("is_hit"):
+            current_green += 1
+        else:
+            break
+    for d in docs:
+        if not d.get("is_hit"):
+            current_red += 1
+        else:
+            break
+
     return PredictionStats(
         total=total,
         hits=hits,
@@ -515,6 +582,9 @@ async def predictions_stats(source: Optional[SourceLiteral] = None):
         color_misses=color_misses,
         white_hits=white_hits,
         white_misses=white_misses,
+        by_gale=by_gale,
+        current_green_streak=current_green,
+        current_red_streak=current_red,
     )
 
 
@@ -524,6 +594,353 @@ async def clear_predictions(source: Optional[SourceLiteral] = None):
     if source:
         q["source"] = source
     res = await db.prediction_logs.delete_many(q)
+    return {"deleted": res.deleted_count}
+
+
+# ---------------- Settings (single doc) ----------------
+SETTINGS_KEY = "user_settings"
+
+
+async def get_settings_doc() -> UserSettings:
+    doc = await db.settings.find_one({"key": SETTINGS_KEY}, {"_id": 0, "key": 0})
+    if not doc:
+        s = UserSettings()
+        await db.settings.insert_one({"key": SETTINGS_KEY, **s.model_dump()})
+        return s
+    try:
+        return UserSettings(**doc)
+    except Exception:
+        return UserSettings()
+
+
+@api_router.get("/settings", response_model=UserSettings)
+async def get_settings():
+    return await get_settings_doc()
+
+
+@api_router.put("/settings", response_model=UserSettings)
+async def update_settings(s: UserSettings):
+    s.max_gales = max(0, min(s.max_gales, 4))
+    await db.settings.update_one(
+        {"key": SETTINGS_KEY},
+        {"$set": s.model_dump()},
+        upsert=True,
+    )
+    return s
+
+
+# ---------------- Active Prediction (one at a time) ----------------
+def _active_pred_doc_to_model(d: dict) -> ActivePrediction:
+    # Filtra chaves desconhecidas
+    allowed = set(ActivePrediction.model_fields.keys())
+    clean = {k: v for k, v in d.items() if k in allowed}
+    return ActivePrediction(**clean)
+
+
+async def get_pending_active() -> Optional[dict]:
+    return await db.active_predictions.find_one({"status": "pending"}, {"_id": 0})
+
+
+def _predict_color_from_history(colors: List[str]) -> tuple[str, float, str]:
+    """Replica a logica do /prediction sobre uma lista de cores newest-first."""
+    total = len(colors)
+    c = Counter(colors)
+    red_freq = c.get("red", 0) / total
+    black_freq = c.get("black", 0) / total
+    white_freq = c.get("white", 0) / total
+    base_red = (1 - red_freq) * 0.5
+    base_black = (1 - black_freq) * 0.5
+    base_white = (1 - white_freq) * 0.5
+    chrono = list(reversed(colors))
+    transitions = Counter()
+    for prev, nxt in zip(chrono, chrono[1:]):
+        transitions[(prev, nxt)] += 1
+    last_color = colors[0]
+    total_from_last = sum(v for (p, _), v in transitions.items() if p == last_color) or 1
+    p_red = transitions.get((last_color, "red"), 0) / total_from_last
+    p_black = transitions.get((last_color, "black"), 0) / total_from_last
+    p_white = transitions.get((last_color, "white"), 0) / total_from_last
+    red_score = base_red + p_red * 0.3
+    black_score = base_black + p_black * 0.3
+    white_score = base_white + p_white * 0.3
+    last_white_ago = None
+    for idx, col in enumerate(colors):
+        if col == "white":
+            last_white_ago = idx
+            break
+    if last_white_ago is None or last_white_ago >= 14:
+        white_score += 0.15
+    streak_color = colors[0]
+    streak_len = 0
+    for col in colors:
+        if col == streak_color:
+            streak_len += 1
+        else:
+            break
+    if streak_len >= 4:
+        if streak_color == "red":
+            black_score += 0.08
+        elif streak_color == "black":
+            red_score += 0.08
+    scores = {"red": red_score, "black": black_score, "white": white_score}
+    s_sum = sum(scores.values()) or 1
+    norm = {k: v / s_sum for k, v in scores.items()}
+    next_color = max(norm, key=norm.get)
+    confidence = round(norm[next_color] * 100, 1)
+    rationale = (
+        f"Janela {total}. Seq {streak_len}x {streak_color}. "
+        f"Branco ha {last_white_ago if last_white_ago is not None else '15+'} rod."
+    )
+    return next_color, confidence, rationale
+
+
+async def _generate_active_prediction(source: SourceLiteral, max_gales: int,
+                                      skip_white: bool = False) -> Optional[ActivePrediction]:
+    """Cria nova ActivePrediction com base no historico e regras ativas.
+    Prioriza: (1) regra ativa que casa  (2) algoritmo estatistico."""
+    q = {"source": source}
+    cursor = db.rounds.find(q, {"_id": 0}).sort("captured_at", -1).limit(50)
+    docs = await cursor.to_list(length=50)
+    if len(docs) < 5:
+        return None
+
+    colors = [d["color"] for d in docs]
+    anchor = docs[0]
+
+    # Tenta encontrar regra ativa que casa
+    rule_name = None
+    pred_color = None
+    confidence = None
+    rationale = None
+    rule_gales = None
+    try:
+        rules_docs = await db.rules.find({"enabled": True}, {"_id": 0}).sort("priority", -1).to_list(length=500)
+        for rd in rules_docs:
+            try:
+                rule = Rule(**rd)
+            except Exception:
+                continue
+            if _eval_rule(rule, colors):
+                rule_name = rule.name
+                pred_color = rule.action.color
+                rationale = f"Regra '{rule.name}'" + (f" - {rule.action.note}" if rule.action.note else "")
+                rule_gales = rule.action.gales
+                confidence = 70.0
+                break
+    except Exception:
+        pass
+
+    # Fallback: algoritmo estatistico
+    if pred_color is None:
+        pred_color, confidence, rationale = _predict_color_from_history(colors)
+
+    # Se skip_white estiver ligado e o algoritmo previu branco, escolhe a 2a cor
+    if skip_white and pred_color == "white":
+        # decide entre red/black baseado em frequencia
+        total = len(colors)
+        c = Counter(colors)
+        # menos frequente entre red/black tem chance maior pela reversao a media
+        pred_color = "red" if c.get("red", 0) <= c.get("black", 0) else "black"
+        rationale = (rationale or "") + " (branco ignorado por config)"
+
+    # gales: usa o da regra se houver, senao usa o config
+    effective_gales = rule_gales if rule_gales is not None else max_gales
+    effective_gales = max(0, min(effective_gales, 4))
+
+    obj = ActivePrediction(
+        source=source,
+        predicted_color=pred_color,
+        max_gales=effective_gales,
+        current_gale=0,
+        status="pending",
+        anchor_round_id=anchor.get("id"),
+        anchor_number=anchor.get("number"),
+        anchor_color=anchor.get("color"),
+        anchor_time_str=anchor.get("time_str"),
+        confidence=confidence,
+        rationale=rationale,
+        rule_name=rule_name,
+    )
+    await db.active_predictions.insert_one(obj.model_dump())
+    return obj
+
+
+async def _advance_active_prediction() -> Optional[dict]:
+    """Avalia a previsao pending contra rodadas que chegaram apos a ancora.
+    Retorna o doc atualizado (ou None se nao havia pending)."""
+    pending = await get_pending_active()
+    if not pending:
+        return None
+
+    src = pending.get("source")
+    anchor_id = pending.get("anchor_round_id")
+    if not anchor_id:
+        return pending
+
+    # Pega a captured_at da ancora
+    anchor_doc = await db.rounds.find_one({"id": anchor_id}, {"_id": 0})
+    if not anchor_doc:
+        return pending
+    anchor_captured = anchor_doc.get("captured_at")
+    if not anchor_captured:
+        return pending
+
+    # Lista todas as rodadas APOS a ancora (mais antiga primeiro)
+    q = {"source": src, "captured_at": {"$gt": anchor_captured}}
+    cursor = db.rounds.find(q, {"_id": 0}).sort("captured_at", 1)
+    new_rounds = await cursor.to_list(length=200)
+    if not new_rounds:
+        return pending
+
+    checked_ids = list(pending.get("checked_round_ids", []))
+    current_gale = pending.get("current_gale", 0)
+    max_gales = pending.get("max_gales", 0)
+    predicted = pending.get("predicted_color")
+    status = pending.get("status", "pending")
+    hit_at_gale = None
+
+    # Avalia cada rodada nova que ainda nao foi checada
+    for r in new_rounds:
+        rid = r.get("id")
+        if rid in checked_ids:
+            continue
+        actual = r.get("color")
+        checked_ids.append(rid)
+        if actual == predicted:
+            status = "hit"
+            hit_at_gale = current_gale
+            break
+        else:
+            # erro nesta rodada -> avanca gale ou perde
+            if current_gale >= max_gales:
+                status = "loss"
+                break
+            else:
+                current_gale += 1
+                # continua para a proxima rodada (proximo gale)
+
+    update = {
+        "checked_round_ids": checked_ids,
+        "current_gale": current_gale,
+        "status": status,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    if status in ("hit", "loss"):
+        update["finished_at"] = datetime.now(timezone.utc)
+        if status == "hit":
+            update["hit_at_gale"] = hit_at_gale
+
+    await db.active_predictions.update_one({"id": pending["id"]}, {"$set": update})
+
+    # Se finalizou, registra no log para estatisticas
+    if status in ("hit", "loss"):
+        # actual_color = cor da ultima rodada avaliada
+        last_actual = None
+        for r in reversed(new_rounds):
+            if r.get("id") in checked_ids:
+                last_actual = r.get("color")
+                break
+        if last_actual:
+            log = PredictionLog(
+                predicted_color=predicted,
+                actual_color=last_actual,
+                is_hit=(status == "hit"),
+                source=src,
+                confidence=pending.get("confidence"),
+                note=pending.get("rule_name") or "auto",
+                hit_at_gale=hit_at_gale if status == "hit" else None,
+                max_gales=max_gales,
+            )
+            await db.prediction_logs.insert_one(log.model_dump())
+
+        # Auto-prever proxima?
+        try:
+            settings = await get_settings_doc()
+            if settings.auto_predict:
+                await _generate_active_prediction(
+                    settings.preferred_source,
+                    settings.max_gales,
+                    settings.skip_white_predictions,
+                )
+        except Exception as e:
+            logger.warning(f"auto-predict next failed: {e}")
+
+    return await db.active_predictions.find_one({"id": pending["id"]}, {"_id": 0})
+
+
+@api_router.get("/active-prediction")
+async def get_active_prediction():
+    # Sempre avalia antes de retornar (pega rodadas novas)
+    try:
+        await _advance_active_prediction()
+    except Exception as e:
+        logger.warning(f"advance on GET failed: {e}")
+    pending = await db.active_predictions.find_one(
+        {"status": "pending"}, {"_id": 0}
+    )
+    if pending:
+        return _active_pred_doc_to_model(pending)
+    # Senao, retorna a ultima finalizada (hit/loss/cancelled)
+    last = await db.active_predictions.find_one(
+        {}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if last:
+        return _active_pred_doc_to_model(last)
+    return None
+
+
+@api_router.post("/active-prediction", response_model=ActivePrediction)
+async def create_active_prediction(source: Optional[SourceLiteral] = None,
+                                   max_gales: Optional[int] = None):
+    # Cancela qualquer pending anterior
+    await db.active_predictions.update_many(
+        {"status": "pending"},
+        {"$set": {"status": "cancelled", "finished_at": datetime.now(timezone.utc)}},
+    )
+    settings = await get_settings_doc()
+    src = source or settings.preferred_source
+    mg = max_gales if max_gales is not None else settings.max_gales
+    obj = await _generate_active_prediction(src, mg, settings.skip_white_predictions)
+    if not obj:
+        raise HTTPException(
+            status_code=400,
+            detail="Historico insuficiente para gerar previsao (>=5 rodadas).",
+        )
+    return obj
+
+
+@api_router.delete("/active-prediction")
+async def cancel_active_prediction():
+    res = await db.active_predictions.update_many(
+        {"status": "pending"},
+        {"$set": {"status": "cancelled", "finished_at": datetime.now(timezone.utc)}},
+    )
+    return {"cancelled": res.modified_count}
+
+
+@api_router.post("/active-prediction/advance")
+async def advance_active_prediction_endpoint():
+    """Forca uma avaliacao imediata (uso opcional pelo cliente)."""
+    doc = await _advance_active_prediction()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Nenhuma previsao pending.")
+    return _active_pred_doc_to_model(doc)
+
+
+@api_router.get("/active-prediction/history")
+async def active_prediction_history(limit: int = 20):
+    limit = max(1, min(limit, 100))
+    cursor = db.active_predictions.find(
+        {"status": {"$in": ["hit", "loss", "cancelled"]}},
+        {"_id": 0},
+    ).sort("finished_at", -1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+    return [_active_pred_doc_to_model(d) for d in docs]
+
+
+@api_router.delete("/active-prediction/history")
+async def clear_active_prediction_history():
+    res = await db.active_predictions.delete_many({})
     return {"deleted": res.deleted_count}
 
 
@@ -892,6 +1309,11 @@ async def poll_blaze():
         inserted += 1
     if inserted:
         logger.info(f"poll_blaze: {inserted} novas, {duplicates} duplicadas")
+        # Avalia previsao pendente apos receber rodadas novas
+        try:
+            await _advance_active_prediction()
+        except Exception as e:
+            logger.warning(f"advance after poll_blaze failed: {e}")
 
 
 # Regras default — carregadas no primeiro startup
@@ -992,13 +1414,13 @@ async def on_startup():
     except Exception as e:
         logger.warning(f"seed_default_rules failed: {e}")
     try:
-        # Roda a cada 60s e tambem agora
-        scheduler.add_job(poll_blaze, "interval", seconds=60, id="poll_blaze",
+        # Roda a cada 30s e tambem agora
+        scheduler.add_job(poll_blaze, "interval", seconds=30, id="poll_blaze",
                           replace_existing=True, max_instances=1, coalesce=True)
         scheduler.start()
         # Executa um primeiro poll em background
         asyncio.create_task(poll_blaze())
-        logger.info("Background poller iniciado (Blaze, intervalo 60s)")
+        logger.info("Background poller iniciado (Blaze, intervalo 30s)")
     except Exception as e:
         logger.warning(f"scheduler start failed: {e}")
 
