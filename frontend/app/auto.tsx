@@ -248,7 +248,7 @@ export default function AutoCollectorScreen() {
       <View style={styles.tipsCard}>
         <Text style={styles.tipsTitle}>💡 Como manter rodando 24/7</Text>
         <Text style={styles.tipsItem}>
-          • Deixe o app aberto nessa tela com <Text style={styles.b}>"Manter tela acordada"</Text> ligado.
+          • Deixe o app aberto nessa tela com <Text style={styles.b}>{"\"Manter tela acordada\""}</Text> ligado.
         </Text>
         <Text style={styles.tipsItem}>
           • Plugue o celular no carregador para não esgotar a bateria.

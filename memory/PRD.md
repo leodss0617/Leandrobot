@@ -1,118 +1,96 @@
 # PRD - Coletor de Rodadas Blaze (TipMiner / Mega Tróia)
 
 ## Visão Geral
-Aplicativo mobile (Expo) que coleta rodadas do Blaze Double diretamente das páginas públicas do **TipMiner** e **Mega Tróia** via WebView com extração por JavaScript injetado. Armazena histórico, calcula estatísticas, gera previsão estatística e executa o sistema **Martingale (Gale)** automaticamente.
+Aplicativo mobile (Expo) que coleta rodadas do Blaze Double automaticamente. Versão atual (jan/2026) adiciona o modo **"Coletor Automático"** que chama a API pública da Blaze direto do celular do usuário (IP brasileiro, sem geo-block), eliminando a necessidade de WebView aberta.
 
 ## Stack
-- Frontend: Expo SDK 54 + expo-router (Drawer) + react-native-webview
-- Backend: FastAPI + MongoDB (motor) + APScheduler (polling)
+- Frontend: Expo SDK 54 + expo-router (Drawer) + react-native-webview + **expo-keep-awake**
+- Backend: FastAPI + MongoDB (motor) + APScheduler
 - Sem integrações externas / sem LLM
 
 ## Funcionalidades
 
-### Captura (aba 1)
-- WebView que carrega TipMiner, Mega Tróia ou Blaze
-- Seletor flutuante para alternar entre sites
-- FAB "Coletar rodadas" — injeta script que percorre o DOM da página, identifica elementos com texto 0-14 próximos de um horário HH:MM, deduplica e envia em lote para o backend
-- Auto-coleta (polling a cada 8s via WebView no app mobile)
-- Mapeamento de cor: `0 = branco`, `1-7 = vermelho`, `8-14 = preto`
+### ⚡ Coletor Automático (NOVO — aba 1)
+- Tela `app/auto.tsx` com botão único "INICIAR COLETOR AUTOMÁTICO"
+- Faz fetch direto em `https://blaze.bet.br/api/roulette_games/recent` (e fallbacks) a cada 5s
+- Normaliza payload Blaze e envia em lote para `POST /api/rounds/bulk`
+- Toggle "Manter tela acordada" (expo-keep-awake) — impede o celular de dormir
+- Indicador visual ATIVO/COLETANDO/BLOQUEADO + ciclos/novas/repetidas/erros
+- Log ao vivo das últimas 30 operações
+- Funciona porque o **IP do celular do usuário é brasileiro** — a API da Blaze responde 200 normal
+- Backend nos servidores Emergent (EUA) recebe 451 → o poll-status do backend mostra "BLOQUEADO" automaticamente
 
-### Bot + Gales (aba 2) ✅ IMPLEMENTADO
-- **Sistema Martingale completo**: previsão inicial → Gale 1 → Gale 2 → até acertar ou perder
-- **Máximo de gales configurável** (0 a 4)
-- **Uma previsão ativa por vez**: sistema sequencial
-- **Auto-previsão**: gera próxima automaticamente ao finalizar
-- **Trilho visual de gales** mostrando Entrada, G1, G2
-- **Placar de acertos/erros** com estatísticas detalhadas
-- **Acertos por nível de gale** (quantos acertaram direto, no G1, G2...)
-- **Regras das Pedras Pagadoras** integradas (12/14, 13, gêmeas, etc.)
-- **Status do polling** com aviso se API bloqueada
+### Captura manual (aba 2)
+- WebView com TipMiner/Mega Tróia/Blaze
+- Coleta manual via injeção de JS (mantido como fallback)
 
-### Histórico (aba 3)
-- Lista das últimas 300 rodadas com filtro por site
-- Pull-to-refresh
-- Bolinha colorida com o número + horário + carimbo de captura
+### Bot + Gales (aba 3)
+- Sistema Martingale completo (até G4)
+- Auto-previsão, regras das Pedras Pagadoras, placar de acertos
 
-### Análise (aba 4)
-- **Previsão da próxima cor** com nível de confiança, baseada em:
-  - Reversão à média (50%)
-  - Cadeia de Markov de 1 passo a partir da última cor (30%)
-  - Bônus de raridade do branco (15%) quando dry-spell > 14
-  - Bônus de quebra de sequência (8%) quando streak ≥ 4
-- Frequências (vermelho / preto / branco) em barras
-- Sequência atual + há quantas rodadas o branco não cai
-- Top 5 números mais frequentes
+### Histórico, Análise, Regras, Calculadora, Simulador, Ajustes
+- (sem mudanças)
 
-### Regras (aba 5)
-- Motor de regras configurável
-- Regras built-in das Pedras Pagadoras
-- Condições: streak, after_color, gap_white, last_n_pattern, twin_numbers, etc.
-
-### Ajustes (aba 6)
-- Configuração de gales máximos (0-4)
-- Fonte preferida (Blaze, TipMiner, Mega Tróia)
-- Auto-prever próxima (liga/desliga)
-- Ignorar previsões de branco
-- Carregar/recriar regras das Pedras Pagadoras
-- Contadores por site
-- Limpar histórico
-
-## API (todos prefixados com `/api`)
+## API (todas com prefixo `/api`)
 ### Rounds
-- `POST /api/rounds/bulk` — inserir em lote
-- `GET /api/rounds?source=&limit=` — listar
-- `DELETE /api/rounds?source=` — limpar
+- `POST /api/rounds/bulk` — usado pelo Coletor Automático para enviar lote
+- `GET /api/rounds?source=&limit=` / `DELETE /api/rounds?source=`
 
-### Previsão Ativa (Gales) ✅
-- `GET /api/active-prediction` — obter previsão ativa
-- `POST /api/active-prediction` — criar nova previsão
-- `DELETE /api/active-prediction` — cancelar
-- `POST /api/active-prediction/advance` — forçar avaliação
-- `GET /api/active-prediction/history` — histórico
-- `DELETE /api/active-prediction/history` — limpar histórico
+### Poll Status
+- `GET /api/poll-status` — agora retorna `blocked=true` também em falha de DNS, não só em HTTP 451
 
-### Estatísticas
-- `GET /api/stats` — frequências e streak
-- `GET /api/prediction` — previsão estatística
-- `GET /api/predictions/stats` — placar de acertos/erros
-- `GET /api/poll-status` — status do polling automático
+### Demais endpoints (inalterados)
+- /api/stats, /api/prediction, /api/white-forecast, /api/white-alert
+- /api/active-prediction (CRUD + history)
+- /api/predictions/log + /api/predictions/stats
+- /api/rules (CRUD + evaluate + seed-pedras)
+- /api/settings, /api/simulate
 
-### Configurações
-- `GET /api/settings` — obter configurações
-- `PUT /api/settings` — atualizar
+## Como o usuário usa
+1. Abre o app no celular (Brasil)
+2. Drawer → **⚡ Coletor Auto**
+3. Toca **INICIAR COLETOR AUTOMÁTICO**
+4. Deixa "Manter tela acordada" ligado + plugue o carregador
+5. Rodadas chegam a cada 5s automaticamente; bot/análise/regras consomem do banco
 
-### Regras
-- `GET /api/rules` — listar
-- `POST /api/rules` — criar
-- `PUT /api/rules/{id}` — atualizar
-- `DELETE /api/rules/{id}` — excluir
-- `GET /api/rules/evaluate` — avaliar regras contra estado atual
-- `POST /api/rules/seed-pedras` — carregar regras built-in
+## Limitações conhecidas
+- **Backend Emergent não consegue chamar Blaze** (geo-block 451). Por isso a coleta acontece no DEVICE.
+- **iOS**: ao colocar app em segundo plano por >30s, o JS pausa. Mantenha a tela em primeiro plano.
+- **Android**: com keep-awake e app em foreground, roda indefinidamente; retire das restrições de bateria para melhor estabilidade.
+- Para coleta 100% em segundo plano (tela apagada), seria necessário Custom Dev Build com Foreground Service Notification — não disponível em Expo Go.
 
-## Modelo (MongoDB)
+## Implementação técnica (2026-01)
+- `src/blazeCollector.ts` — função `collectOnce()` tenta 3 URLs da Blaze, normaliza payload e posta no backend
+- `app/auto.tsx` — UI da tela com poll loop (setInterval 5s), AppState observer, keep-awake hook
+- `package.json` — adicionado `expo-keep-awake ~15.0.8`
+- `_layout.tsx` — nova entrada `⚡ Coletor Auto` no drawer
+- `server.py` — `poll_blaze()` agora marca `blocked=true` também em falha de DNS
+
+## Tarefas concluídas (jan/2026)
+- [x] Análise do projeto e identificação do geo-block como bloqueio para coleta automática
+- [x] Novo módulo `blazeCollector.ts` com fetch direto + dedupe via backend
+- [x] Nova tela `Coletor Automático` com toggle keep-awake e log ao vivo
+- [x] Drawer atualizado com nova entrada `⚡ Coletor Auto`
+- [x] Backend `poll-status` indica `blocked=true` também em falha de DNS
+- [x] Backend testado (24/24 tests passando, incluindo source=blaze e active-prediction lifecycle)
+
+## Backlog (P1/P2)
+- [ ] P1: Foreground Service notification (Android) para coleta com tela bloqueada (requer EAS Build)
+- [ ] P1: Background fetch task com `expo-background-fetch` (limitado a 15min no iOS)
+- [ ] P2: Modo "delegado" — usuário compartilha rodadas via WebSocket com outros usuários do app
+- [ ] P2: Persistência local (AsyncStorage) das rodadas para offline-first
+- [ ] P2: Push notification quando o bot acerta um Gale
+
+## Modelo (MongoDB) — inalterado
 ```
-# Collection: rounds
-{ id, number(0-14), color, source, time_str?, seconds?, site_ts?, captured_at }
-
-# Collection: active_predictions
-{ id, source, predicted_color, max_gales, current_gale, status, anchor_*, hit_at_gale?, ... }
-
-# Collection: prediction_logs
-{ id, predicted_color, actual_color, is_hit, hit_at_gale?, max_gales?, ... }
-
-# Collection: rules
-{ id, name, enabled, conditions, action, priority }
-
-# Collection: settings
-{ key, max_gales, preferred_source, auto_predict, skip_white_predictions }
+rounds: { id, number(0-14), color, source, time_str?, seconds?, site_ts?, captured_at }
+active_predictions: { id, source, predicted_color, max_gales, current_gale, status, ... }
+prediction_logs: { id, predicted_color, actual_color, is_hit, hit_at_gale?, ... }
+rules: { id, name, enabled, conditions, action, priority }
+settings: { key, max_gales, preferred_source, auto_predict, skip_white_predictions }
 ```
 
 ## Design
 - Tema escuro: fundo `#0c0c0c`, cards `#141414`, bordas `#1f1f1f`
 - Acento: Blaze red `#E11D2A` / dourado `#FFD700`
-- Touch targets ≥ 44px, navegação por Drawer
-
-## Limitações conhecidas
-- **API Blaze bloqueada por geolocalização** (451 Unavailable For Legal Reasons) - usar coleta manual via WebView no app mobile
-- Preview web mostra fallback porque sites externos bloqueiam iframes
-- Previsão é estatística (não garantia). Disclaimer visível na tela de análise
+- Status colors: verde `#22C55E` (ATIVO), laranja `#FFA726` (COLETANDO), vermelho `#FF5252` (BLOQUEADO)

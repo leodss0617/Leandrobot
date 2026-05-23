@@ -1830,6 +1830,12 @@ async def poll_blaze():
     _poll_status["blocked"] = blocked
     
     if not items:
+        # Se nenhuma URL respondeu, assumimos que o backend nao consegue
+        # alcancar a Blaze (geo-block ou falha de DNS). UI vai indicar
+        # "bloqueado" para o usuario ativar o modo mobile.
+        if not blocked:
+            blocked = True
+            _poll_status["blocked"] = True
         if blocked:
             _poll_status["status"] = "blocked"
             _poll_status["message"] = f"API bloqueada: {last_err}"
