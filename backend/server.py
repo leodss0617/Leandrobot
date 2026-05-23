@@ -160,7 +160,7 @@ class PredictionStats(BaseModel):
 class UserSettings(BaseModel):
     max_gales: int = 2
     preferred_source: SourceLiteral = "blaze"
-    auto_predict: bool = True
+    auto_predict: bool = True  # Ligado por padrão
     skip_white_predictions: bool = False  # se True, ignora previsoes de branco
 
 
@@ -553,8 +553,6 @@ def _hhmm_add(time_str: str, minutes: int) -> str:
 
 @api_router.get("/white-forecast", response_model=WhiteForecast)
 async def white_forecast(source: Optional[SourceLiteral] = None, window: int = 60):
-    """Previsao de HORARIO do proximo branco usando logica dos terminais (img 5)
-    e soma de rastro (img 1) das mentorias do usuario."""
     q: dict = {}
     if source:
         q["source"] = source
@@ -658,6 +656,97 @@ async def white_forecast(source: Optional[SourceLiteral] = None, window: int = 6
         next_stone_after_white=next_stone,
         targets=targets,
         notes=None,
+    )
+
+
+# ---------------- White Alert (alerta flutuante: aparece SO quando ha sinal forte) ----------------
+class WhiteAlert(BaseModel):
+    active: bool = False
+    trigger_round_id: Optional[str] = None
+    trigger_round_number: Optional[int] = None
+    trigger_round_time: Optional[str] = None
+    trigger_round_color: Optional[ColorLiteral] = None
+    rule_name: Optional[str] = None
+    rationale: Optional[str] = None
+    confidence: Optional[int] = None
+    suggested_target: Optional[WhiteForecastTarget] = None  # alvo mais provavel (mais cedo)
+    expires_in_minutes: Optional[int] = None  # quanto falta para o alvo
+
+
+@api_router.get("/white-alert", response_model=WhiteAlert)
+async def get_white_alert(source: Optional[SourceLiteral] = None):
+    """Retorna alerta flutuante de BRANCO se uma regra de mentoria
+    (Pedras Pagadoras) acionou nas rodadas mais recentes.
+
+    Vale apenas para PRESENT-time: olha a ultima rodada e checa se acionou
+    alguma regra que prediz branco.
+    """
+    settings = await get_settings_doc()
+    src = source or settings.preferred_source
+
+    q = {"source": src}
+    cursor = db.rounds.find(q, {"_id": 0}).sort("captured_at", -1).limit(50)
+    docs = await cursor.to_list(length=50)
+    if len(docs) < 3:
+        return WhiteAlert(active=False)
+
+    colors = [d["color"] for d in docs]
+    numbers = [d["number"] for d in docs]
+    latest = docs[0]
+
+    # Procura regra que casa e prediz BRANCO (nao skip)
+    try:
+        rules_docs = await db.rules.find({"enabled": True}, {"_id": 0}).sort("priority", -1).to_list(length=500)
+    except Exception:
+        rules_docs = []
+
+    matched: Optional[Rule] = None
+    for rd in rules_docs:
+        try:
+            rule = Rule(**rd)
+        except Exception:
+            continue
+        if rule.action.color != "white" or rule.action.skip:
+            continue
+        if _eval_rule(rule, colors, numbers):
+            matched = rule
+            break
+
+    if not matched:
+        return WhiteAlert(active=False)
+
+    # Pega tambem o white-forecast (alvo mais provavel)
+    try:
+        wf = await white_forecast(source=src, window=60)
+    except Exception:
+        wf = None
+
+    suggested: Optional[WhiteForecastTarget] = None
+    expires_min: Optional[int] = None
+    if wf and wf.targets:
+        # Pega o alvo de maior confianca (geralmente o sniper curto)
+        suggested = max(wf.targets, key=lambda t: t.confidence)
+        # Calcula quanto falta a partir do horário do último branco
+        try:
+            anchor_min = time_str_to_minutes(wf.last_white_time)
+            target_min = time_str_to_minutes(suggested.time_str)
+            if anchor_min is not None and target_min is not None:
+                # diff considerando que pode passar de 24h
+                expires_min = (target_min - anchor_min) % (24 * 60)
+        except Exception:
+            pass
+
+    return WhiteAlert(
+        active=True,
+        trigger_round_id=latest.get("id"),
+        trigger_round_number=latest.get("number"),
+        trigger_round_time=latest.get("time_str"),
+        trigger_round_color=latest.get("color"),
+        rule_name=matched.name,
+        rationale=matched.action.note or matched.name,
+        confidence=80,
+        suggested_target=suggested,
+        expires_in_minutes=expires_min,
     )
 
 
@@ -1612,6 +1701,31 @@ async def simulate(source: Optional[SourceLiteral] = None, window: int = 30, lim
     )
 
 
+# ---------------- Poll Status Endpoint ----------------
+class PollStatus(BaseModel):
+    status: str
+    blocked: bool
+    message: str
+    last_poll_at: Optional[str]
+    last_insert_count: int
+
+
+# Status global do polling (para exibir no frontend)
+_poll_status = {
+    "status": "starting",
+    "blocked": False,
+    "message": "",
+    "last_poll_at": None,
+    "last_insert_count": 0,
+}
+
+
+@api_router.get("/poll-status", response_model=PollStatus)
+async def get_poll_status():
+    """Retorna o status atual do background polling da Blaze."""
+    return PollStatus(**_poll_status)
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1683,15 +1797,24 @@ def _normalize_blaze_item(item: dict) -> Optional[dict]:
 
 
 async def poll_blaze():
-    """Roda a cada 60s: consulta a API publica da Blaze e insere rodadas novas."""
+    """Roda a cada 30s: consulta a API publica da Blaze e insere rodadas novas."""
+    global _poll_status
     items = None
     last_err = None
+    blocked = False
     async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
         for url in BLAZE_API_URLS:
             try:
                 r = await client.get(url)
                 if r.status_code == 200:
                     data = r.json()
+                    # Detecta bloqueio por geolocalização
+                    if isinstance(data, dict) and data.get("error"):
+                        err_msg = data.get("error", {}).get("message", "")
+                        if "country" in err_msg.lower() or "not supported" in err_msg.lower():
+                            blocked = True
+                            last_err = f"Bloqueio geográfico: {err_msg}"
+                            continue
                     if isinstance(data, list) and data:
                         items = data
                         break
@@ -1699,10 +1822,22 @@ async def poll_blaze():
                         items = data["data"]
                         break
             except Exception as e:
-                last_err = e
+                last_err = str(e)
                 continue
+    
+    # Atualiza status global do polling
+    _poll_status["last_poll_at"] = datetime.now(timezone.utc).isoformat()
+    _poll_status["blocked"] = blocked
+    
     if not items:
-        logger.debug(f"poll_blaze: nenhuma API respondeu ({last_err})")
+        if blocked:
+            _poll_status["status"] = "blocked"
+            _poll_status["message"] = f"API bloqueada: {last_err}"
+            logger.warning("poll_blaze: API bloqueada por geolocalização")
+        else:
+            _poll_status["status"] = "error"
+            _poll_status["message"] = f"Nenhuma API respondeu: {last_err}"
+            logger.debug(f"poll_blaze: nenhuma API respondeu ({last_err})")
         return
     inserted = 0
     duplicates = 0
@@ -1730,6 +1865,11 @@ async def poll_blaze():
         )
         await db.rounds.insert_one(obj.model_dump())
         inserted += 1
+    # Atualiza status do polling
+    _poll_status["status"] = "ok"
+    _poll_status["message"] = f"{inserted} novas, {duplicates} duplicadas"
+    _poll_status["last_insert_count"] = inserted
+    
     if inserted:
         logger.info(f"poll_blaze: {inserted} novas, {duplicates} duplicadas")
         # Avalia previsao pendente apos receber rodadas novas

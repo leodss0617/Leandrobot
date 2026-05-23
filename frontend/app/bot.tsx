@@ -15,6 +15,7 @@ import {
   UserSettings,
   PredictionStats,
   WhiteForecast,
+  PollStatus,
   getActivePrediction,
   createActivePrediction,
   cancelActivePrediction,
@@ -23,6 +24,7 @@ import {
   getSettings,
   getPredictionsStats,
   getWhiteForecast,
+  getPollStatus,
   listRounds,
   Round,
   COLOR_HEX,
@@ -46,6 +48,7 @@ export default function BotScreen() {
   const [stats, setStats] = useState<PredictionStats | null>(null);
   const [recent, setRecent] = useState<Round[]>([]);
   const [whiteForecast, setWhiteForecast] = useState<WhiteForecast | null>(null);
+  const [pollStatus, setPollStatus] = useState<PollStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,6 +67,7 @@ export default function BotScreen() {
     try { setStats(await getPredictionsStats()); } catch { setStats(null); }
     try { setRecent(await listRounds(undefined, 8)); } catch { setRecent([]); }
     try { setWhiteForecast(await getWhiteForecast()); } catch { setWhiteForecast(null); }
+    try { setPollStatus(await getPollStatus()); } catch { setPollStatus(null); }
     setLoading(false);
   }, []);
 
@@ -146,6 +150,21 @@ export default function BotScreen() {
           )}
         </View>
 
+        {/* Status do Polling */}
+        {pollStatus && (pollStatus.status === "error" || pollStatus.status === "blocked") && (
+          <View style={styles.pollWarning} testID="poll-warning">
+            <Text style={styles.pollWarningIcon}>⚠️</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pollWarningTitle}>
+                {pollStatus.status === "blocked" ? "API bloqueada (geolocalização)" : "Erro no polling automático"}
+              </Text>
+              <Text style={styles.pollWarningText}>
+                Use a aba &quot;Captura&quot; para coletar rodadas manualmente via WebView.
+              </Text>
+            </View>
+          </View>
+        )}
+
         {loading && !active ? (
           <View style={styles.center}><ActivityIndicator color="#FF1F1F" size="large" /></View>
         ) : !active ? (
@@ -193,59 +212,6 @@ export default function BotScreen() {
           </Text>
         )}
       </View>
-
-      {/* Previsão de horário do BRANCO */}
-      {whiteForecast && whiteForecast.targets.length > 0 && (
-        <View style={styles.card} testID="white-forecast-card">
-          <View style={styles.cardHeader}>
-            <View style={[styles.recentBall, { width: 28, height: 28, backgroundColor: "#fff", borderRadius: 14, borderColor: "#888" }]}>
-              <Text style={{ color: "#111", fontWeight: "900", fontSize: 14 }}>B</Text>
-            </View>
-            <Text style={styles.cardTitle}>Previsão de Horário do Branco</Text>
-          </View>
-          <View style={styles.wfHeader}>
-            <Text style={styles.wfHeaderText}>
-              Último branco: <Text style={{ color: "#fff", fontWeight: "800" }}>{whiteForecast.last_white_time}</Text>
-              {whiteForecast.last_white_terminal !== null && (
-                <Text>  · Terminal <Text style={{ color: "#FFD700", fontWeight: "800" }}>{whiteForecast.last_white_terminal}</Text></Text>
-              )}
-              {whiteForecast.mirror_terminal !== null && (
-                <Text>  ↔ Espelho <Text style={{ color: "#FFD700", fontWeight: "800" }}>{whiteForecast.mirror_terminal}</Text></Text>
-              )}
-            </Text>
-            {whiteForecast.next_stone_after_white !== null && (
-              <Text style={styles.wfHeaderText}>
-                Pedra após branco: <Text style={{ color: "#fff", fontWeight: "800" }}>{whiteForecast.next_stone_after_white}</Text>
-              </Text>
-            )}
-          </View>
-          {whiteForecast.targets.map((t, idx) => {
-            const colorByType: Record<string, { bg: string; bd: string; ic: string }> = {
-              sniper_short: { bg: "#0d2330", bd: "#1d6a87", ic: "🎯" },
-              elite_long: { bg: "#3a2f0a", bd: "#FFD700", ic: "👑" },
-              soma_rastro: { bg: "#0d3320", bd: "#1f7a47", ic: "➕" },
-              soma_rastro_double: { bg: "#3a1010", bd: "#7a1f1f", ic: "✖️" },
-            };
-            const c = colorByType[t.type] || colorByType.sniper_short;
-            return (
-              <View key={idx} style={[styles.wfTarget, { backgroundColor: c.bg, borderColor: c.bd }]}>
-                <Text style={styles.wfIcon}>{c.ic}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.wfTime}>{t.time_str}</Text>
-                  <Text style={styles.wfRationale}>{t.rationale}</Text>
-                </View>
-                <View style={styles.wfConfBox}>
-                  <Text style={styles.wfConfNum}>+{t.minutes_ahead}min</Text>
-                  <Text style={styles.wfConfLabel}>{t.confidence}%</Text>
-                </View>
-              </View>
-            );
-          })}
-          <Text style={styles.wfHint}>
-            ℹ️ Baseado nas mentorias: terminais espelho + soma de rastro
-          </Text>
-        </View>
-      )}
 
       {/* Placar */}
       {stats && (
@@ -665,6 +631,22 @@ const styles = StyleSheet.create({
   historyTitle: { color: "#fff", fontWeight: "700", fontSize: 13 },
   historySub: { color: "#7a7a7a", fontSize: 10, marginTop: 2 },
   historyTime: { color: "#7a7a7a", fontSize: 11, fontWeight: "600" },
+
+  // Poll Warning
+  pollWarning: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#3a2f0a",
+    borderColor: "#7a6a1f",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+  pollWarningIcon: { fontSize: 20 },
+  pollWarningTitle: { color: "#FFD700", fontWeight: "800", fontSize: 13, marginBottom: 2 },
+  pollWarningText: { color: "#bbb", fontSize: 11, lineHeight: 15 },
 
   // White forecast
   wfHeader: {

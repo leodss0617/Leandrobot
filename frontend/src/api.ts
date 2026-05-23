@@ -342,6 +342,27 @@ export async function getWhiteForecast(source?: SourceType): Promise<WhiteForeca
   return res.json();
 }
 
+export interface WhiteAlert {
+  active: boolean;
+  trigger_round_id?: string | null;
+  trigger_round_number?: number | null;
+  trigger_round_time?: string | null;
+  trigger_round_color?: ColorType | null;
+  rule_name?: string | null;
+  rationale?: string | null;
+  confidence?: number | null;
+  suggested_target?: WhiteForecastTarget | null;
+  expires_in_minutes?: number | null;
+}
+
+export async function getWhiteAlert(source?: SourceType): Promise<WhiteAlert> {
+  const p = new URLSearchParams();
+  if (source) p.append("source", source);
+  const res = await fetch(`${API_BASE}/white-alert?${p}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function seedPedrasRules(replace = false): Promise<{ inserted: number; skipped_existing: number; total_seed: number }> {
   const res = await fetch(`${API_BASE}/rules/seed-pedras?replace=${replace}`, { method: "POST" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -359,3 +380,18 @@ export const COLOR_LABEL: Record<ColorType, string> = {
   black: "Preto",
   white: "Branco",
 };
+
+// Poll Status
+export interface PollStatus {
+  status: string;
+  blocked: boolean;
+  message: string;
+  last_poll_at: string | null;
+  last_insert_count: number;
+}
+
+export async function getPollStatus(): Promise<PollStatus> {
+  const res = await fetch(`${API_BASE}/poll-status`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
