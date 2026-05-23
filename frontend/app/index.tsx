@@ -168,21 +168,33 @@ export default function CaptureScreen() {
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [autoCollect, setAutoCollect] = useState(false);
   const [lastAutoAt, setLastAutoAt] = useState<number | null>(null);
+  const [sessionInserted, setSessionInserted] = useState(0);
   const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoTickCount = useRef(0);
 
   const current = SITES.find((s) => s.key === activeSite)!;
 
-  // Auto-coleta: a cada 30s injeta o scraper sem mostrar alertas
+  // Auto-coleta: a cada 15s injeta o scraper sem mostrar alertas.
+  // A cada 20 ciclos (~5min) recarrega a página para forçar dados frescos.
   useEffect(() => {
-    if (autoRef.current) {
-      clearInterval(autoRef.current);
-      autoRef.current = null;
-    }
+    if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null; }
+    autoTickCount.current = 0;
     if (autoCollect && Platform.OS !== "web") {
       autoRef.current = setInterval(() => {
-        webRef.current?.injectJavaScript(INJECTED_SCRAPER);
-        setLastAutoAt(Date.now());
-      }, 30000);
+        autoTickCount.current += 1;
+        if (autoTickCount.current % 20 === 0) {
+          // recarrega a página a cada ~5 minutos
+          webRef.current?.reload();
+          // aguarda um pouco antes de tentar coletar de novo
+          setTimeout(() => {
+            webRef.current?.injectJavaScript(INJECTED_SCRAPER);
+            setLastAutoAt(Date.now());
+          }, 4000);
+        } else {
+          webRef.current?.injectJavaScript(INJECTED_SCRAPER);
+          setLastAutoAt(Date.now());
+        }
+      }, 15000);
     }
     return () => {
       if (autoRef.current) clearInterval(autoRef.current);
@@ -217,6 +229,9 @@ export default function CaptureScreen() {
         }
         const res = await postBulkRounds(activeSite, rounds);
         setCapturing(false);
+        if (res.inserted > 0) {
+          setSessionInserted((n) => n + res.inserted);
+        }
         setLastResult(
           `✓ ${res.inserted} novas · ${res.duplicates} repetidas · ${res.total} total${isAuto ? " (auto)" : ""}`,
         );
@@ -304,8 +319,8 @@ export default function CaptureScreen() {
       {autoCollect && (
         <View style={styles.autoBanner} testID="auto-banner">
           <Text style={styles.autoBannerText}>
-            ⚡ Auto-coleta ATIVA — re-injetando a cada 30s
-            {lastAutoAt ? ` · última: ${new Date(lastAutoAt).toLocaleTimeString("pt-BR")}` : ""}
+            ⚡ Auto-coleta ATIVA (15s) · {sessionInserted} inseridas nesta sessão
+            {lastAutoAt ? ` · ${new Date(lastAutoAt).toLocaleTimeString("pt-BR")}` : ""}
           </Text>
         </View>
       )}

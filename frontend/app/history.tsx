@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ const FILTERS: { key: SourceType | "all"; label: string }[] = [
   { key: "all", label: "Todos" },
   { key: "tipminer", label: "TipMiner" },
   { key: "megatroia", label: "Mega Tróia" },
+  { key: "blaze", label: "Blaze" },
 ];
 
 export default function HistoryScreen() {
@@ -22,6 +23,9 @@ export default function HistoryScreen() {
   const [filter, setFilter] = useState<SourceType | "all">("all");
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
+  const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -29,22 +33,25 @@ export default function HistoryScreen() {
       const src = filter === "all" ? undefined : filter;
       const data = await listRounds(src, 300);
       setRounds(data);
+      setLastUpdateAt(Date.now());
     } catch (e) {
-      console.warn("Falha ao carregar histórico", e);
+      // ignore
     } finally {
       setLoading(false);
     }
   }, [filter]);
 
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load]),
-  );
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useEffect(() => { load(); }, [load]);
 
+  // Auto-refresh a cada 10s
   useEffect(() => {
-    load();
-  }, [load]);
+    if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null; }
+    if (autoRefresh) {
+      autoRef.current = setInterval(() => { load(); }, 10000);
+    }
+    return () => { if (autoRef.current) clearInterval(autoRef.current); };
+  }, [autoRefresh, load]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -67,6 +74,21 @@ export default function HistoryScreen() {
             </Text>
           </TouchableOpacity>
         ))}
+        <TouchableOpacity
+          onPress={() => setAutoRefresh((v) => !v)}
+          style={[styles.filterChip, autoRefresh && styles.filterChipActive]}
+          testID="history-auto-toggle"
+        >
+          <Text style={[styles.filterText, autoRefresh && styles.filterTextActive]}>
+            {autoRefresh ? "⚡ Auto 10s" : "Auto off"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.statusBar}>
+        <Text style={styles.statusText}>
+          {rounds.length} rodadas · última atualização{" "}
+          {lastUpdateAt ? new Date(lastUpdateAt).toLocaleTimeString("pt-BR") : "—"}
+        </Text>
       </View>
 
       {loading && rounds.length === 0 ? (
@@ -152,6 +174,14 @@ const styles = StyleSheet.create({
   filterChipActive: { backgroundColor: "#22090a", borderColor: "#FF1F1F" },
   filterText: { color: "#9a9a9a", fontWeight: "700", fontSize: 12 },
   filterTextActive: { color: "#FF1F1F" },
+  statusBar: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#0c0c0c",
+    borderBottomWidth: 1,
+    borderBottomColor: "#1a1a1a",
+  },
+  statusText: { color: "#7a7a7a", fontSize: 11, fontWeight: "600" },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 8 },
   emptyTitle: { color: "#fff", fontSize: 18, fontWeight: "700", marginTop: 8 },
   emptyText: { color: "#8a8a8a", fontSize: 13, textAlign: "center", lineHeight: 18 },
