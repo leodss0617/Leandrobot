@@ -520,6 +520,148 @@ async def predict(source: Optional[SourceLiteral] = None, window: int = 50):
     )
 
 
+# ---------------- Previsão de HORÁRIO do Branco (terminais + soma de rastro) ----------------
+# Tabela de espelhos do terminal (img 5):
+TERMINAL_MIRROR = {0: 5, 1: 6, 2: 7, 3: 8, 4: 9,
+                   5: 0, 6: 1, 7: 2, 8: 3, 9: 4}
+
+
+class WhiteForecastTarget(BaseModel):
+    time_str: str  # "HH:MM"
+    minutes_ahead: int  # quantos minutos a partir do último branco
+    rationale: str  # ex: "terminal espelho", "soma de rastro"
+    type: str  # "sniper_short" (5min), "elite_long" (11min), "soma_rastro", "soma_rastro_double"
+    confidence: int  # 0..100
+
+
+class WhiteForecast(BaseModel):
+    last_white_time: Optional[str] = None  # HH:MM ou null
+    last_white_terminal: Optional[int] = None
+    mirror_terminal: Optional[int] = None
+    next_stone_after_white: Optional[int] = None  # pedra que veio DEPOIS do branco
+    targets: List[WhiteForecastTarget] = Field(default_factory=list)
+    notes: Optional[str] = None
+
+
+def _hhmm_add(time_str: str, minutes: int) -> str:
+    m = time_str_to_minutes(time_str)
+    if m is None:
+        return time_str
+    total = (m + minutes) % (24 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+@api_router.get("/white-forecast", response_model=WhiteForecast)
+async def white_forecast(source: Optional[SourceLiteral] = None, window: int = 60):
+    """Previsao de HORARIO do proximo branco usando logica dos terminais (img 5)
+    e soma de rastro (img 1) das mentorias do usuario."""
+    q: dict = {}
+    if source:
+        q["source"] = source
+    window = max(20, min(window, 200))
+    cursor = db.rounds.find(q, {"_id": 0}).sort("captured_at", -1).limit(window)
+    docs = await cursor.to_list(length=window)
+    if not docs:
+        return WhiteForecast(notes="Sem rodadas no histórico.")
+
+    # Encontra o ULTIMO branco (mais recente) e a pedra que veio DEPOIS dele
+    # docs é newest first; o branco mais recente é o primeiro 'white' encontrado
+    last_white_idx = None
+    for i, d in enumerate(docs):
+        if d.get("color") == "white":
+            last_white_idx = i
+            break
+
+    if last_white_idx is None:
+        return WhiteForecast(notes="Nenhum branco recente no histórico para usar como âncora.")
+
+    white_doc = docs[last_white_idx]
+    last_white_time = white_doc.get("time_str")
+    if not last_white_time:
+        return WhiteForecast(notes="Branco encontrado mas sem horário registrado.")
+
+    # Terminal do branco (último dígito do MM)
+    m = time_str_to_minutes(last_white_time)
+    if m is None:
+        return WhiteForecast(notes="Horário do branco inválido.")
+    minute = m % 60
+    terminal = minute % 10
+    mirror = TERMINAL_MIRROR.get(terminal)
+
+    # Pedra que veio DEPOIS do branco (cronologicamente: índice menor pois newest first)
+    next_stone = None
+    if last_white_idx > 0:
+        next_stone = docs[last_white_idx - 1].get("number")
+
+    targets: List[WhiteForecastTarget] = []
+
+    # --- Estratégia 1: ESPELHO CURTO (5min) -- minuto vai do terminal X para terminal mirror
+    # Exemplo: branco em :22 (terminal 2) -> próximo :X7 (terminal 7, +5min)
+    if mirror is not None:
+        # Diferença até o próximo terminal espelho
+        diff_short = (mirror - terminal) % 10
+        if diff_short == 0:
+            diff_short = 10
+        targets.append(WhiteForecastTarget(
+            time_str=_hhmm_add(last_white_time, diff_short),
+            minutes_ahead=diff_short,
+            rationale=f"Espelho curto: terminal {terminal} → {mirror} (+{diff_short} min)",
+            type="sniper_short",
+            confidence=70,
+        ))
+        # ESPELHO LONGO (~11min): para terminal mirror na hora seguinte/mesma hora avançada
+        diff_long = diff_short + 10
+        targets.append(WhiteForecastTarget(
+            time_str=_hhmm_add(last_white_time, diff_long),
+            minutes_ahead=diff_long,
+            rationale=f"Espelho longo: ciclo elite (+{diff_long} min)",
+            type="elite_long",
+            confidence=55,
+        ))
+
+    # --- Estratégia 2: SOMA DE RASTRO (img 1)
+    # alvo = minuto_do_branco + valor_da_pedra_depois
+    if next_stone is not None:
+        # Minuto-alvo absoluto = (minuto do branco + valor da pedra) % 60
+        soma_target_min = (minute + next_stone) % 60
+        # Encontra o próximo minuto X cujo MM seja soma_target_min após last_white_time
+        diff = (soma_target_min - minute) % 60
+        if diff == 0:
+            diff = 60
+        targets.append(WhiteForecastTarget(
+            time_str=_hhmm_add(last_white_time, diff),
+            minutes_ahead=diff,
+            rationale=f"Soma de rastro: minuto {minute} + pedra {next_stone} → :{soma_target_min:02d}",
+            type="soma_rastro",
+            confidence=65,
+        ))
+        # Versão "se falhar, DOBRE a pedra"
+        soma_target_min2 = (minute + next_stone * 2) % 60
+        diff2 = (soma_target_min2 - minute) % 60
+        if diff2 == 0:
+            diff2 = 60
+        targets.append(WhiteForecastTarget(
+            time_str=_hhmm_add(last_white_time, diff2),
+            minutes_ahead=diff2,
+            rationale=f"Pedra dobrada: {minute} + {next_stone}×2 → :{soma_target_min2:02d}",
+            type="soma_rastro_double",
+            confidence=50,
+        ))
+
+    # Ordena por minutes_ahead (mais próximo primeiro)
+    targets.sort(key=lambda t: t.minutes_ahead)
+
+    return WhiteForecast(
+        last_white_time=last_white_time,
+        last_white_terminal=terminal,
+        mirror_terminal=mirror,
+        next_stone_after_white=next_stone,
+        targets=targets,
+        notes=None,
+    )
+
+
+
 # ---------------- Hit / Miss Tracking ----------------
 @api_router.post("/predictions/log", response_model=PredictionLog)
 async def log_prediction(p: PredictionLogIn):
@@ -705,6 +847,7 @@ async def _generate_active_prediction(source: SourceLiteral, max_gales: int,
         return None
 
     colors = [d["color"] for d in docs]
+    numbers = [d["number"] for d in docs]
     anchor = docs[0]
 
     # Tenta encontrar regra ativa que casa
@@ -713,6 +856,7 @@ async def _generate_active_prediction(source: SourceLiteral, max_gales: int,
     confidence = None
     rationale = None
     rule_gales = None
+    skip_signal = False
     try:
         rules_docs = await db.rules.find({"enabled": True}, {"_id": 0}).sort("priority", -1).to_list(length=500)
         for rd in rules_docs:
@@ -720,15 +864,28 @@ async def _generate_active_prediction(source: SourceLiteral, max_gales: int,
                 rule = Rule(**rd)
             except Exception:
                 continue
-            if _eval_rule(rule, colors):
+            if _eval_rule(rule, colors, numbers):
+                # Se a regra eh de SKIP (resfriamento), nao gera previsao
+                if rule.action.skip:
+                    skip_signal = True
+                    rule_name = rule.name
+                    rationale = (
+                        f"⛔ Regra '{rule.name}' acionou bloqueio (resfriamento). "
+                        f"{rule.action.note or ''}"
+                    )
+                    break
                 rule_name = rule.name
                 pred_color = rule.action.color
                 rationale = f"Regra '{rule.name}'" + (f" - {rule.action.note}" if rule.action.note else "")
                 rule_gales = rule.action.gales
-                confidence = 70.0
+                confidence = 75.0
                 break
     except Exception:
         pass
+
+    # Se a regra mandou bloquear, nao gera previsao
+    if skip_signal:
+        return None
 
     # Fallback: algoritmo estatistico
     if pred_color is None:
@@ -737,7 +894,6 @@ async def _generate_active_prediction(source: SourceLiteral, max_gales: int,
     # Se skip_white estiver ligado e o algoritmo previu branco, escolhe a 2a cor
     if skip_white and pred_color == "white":
         # decide entre red/black baseado em frequencia
-        total = len(colors)
         c = Counter(colors)
         # menos frequente entre red/black tem chance maior pela reversao a media
         pred_color = "red" if c.get("red", 0) <= c.get("black", 0) else "black"
@@ -956,17 +1112,23 @@ class SimulateResult(BaseModel):
 # ---------------- Rules Engine ----------------
 class RuleCondition(BaseModel):
     # type: "streak" | "after_color" | "gap_white" | "last_n_pattern"
+    #     | "last_number_eq" | "last_number_in" | "last_numbers_in" | "twin_numbers"
+    #     | "last_number_eq_and_streak"
     type: str
     color: Optional[ColorLiteral] = None
     op: Optional[str] = None  # ">=", "==", "<="
     value: Optional[int] = None
     pattern: Optional[List[ColorLiteral]] = None  # for last_n_pattern
+    number: Optional[int] = None  # for last_number_eq
+    numbers: Optional[List[int]] = None  # for last_number_in / last_numbers_in
+    count: Optional[int] = None  # for last_numbers_in (quantos do conjunto seguidos)
 
 
 class RuleAction(BaseModel):
     color: ColorLiteral
     gales: int = 0
     note: Optional[str] = None
+    skip: bool = False  # se True, sinaliza "NAO ENTRAR" (resfriamento)
 
 
 class RuleIn(BaseModel):
@@ -993,11 +1155,14 @@ class RuleMatch(BaseModel):
     reason: Optional[str] = None
 
 
-def _eval_rule(rule: Rule, colors_newest_first: List[str]) -> bool:
+def _eval_rule(rule: Rule, colors_newest_first: List[str],
+               numbers_newest_first: Optional[List[int]] = None) -> bool:
     """Avalia se a regra casa contra o estado atual (newest first)."""
     if not colors_newest_first:
         return False
+    numbers_newest_first = numbers_newest_first or []
     last = colors_newest_first[0]
+    last_number = numbers_newest_first[0] if numbers_newest_first else None
     # Computa streak
     streak_color = last
     streak_len = 0
@@ -1054,6 +1219,50 @@ def _eval_rule(rule: Rule, colors_newest_first: List[str]) -> bool:
             for i, p in enumerate(cond.pattern):
                 if colors_newest_first[i] != p:
                     return False
+        # ------- novas condicoes baseadas em NUMEROS -------
+        elif t == "last_number_eq":
+            if cond.number is None or last_number is None:
+                return False
+            if last_number != cond.number:
+                return False
+        elif t == "last_number_in":
+            if not cond.numbers or last_number is None:
+                return False
+            if last_number not in cond.numbers:
+                return False
+        elif t == "twin_numbers":
+            # Ultimas 2 (ou cond.count) rodadas com o MESMO numero
+            need = cond.count or 2
+            if len(numbers_newest_first) < need:
+                return False
+            base = numbers_newest_first[0]
+            for i in range(need):
+                if numbers_newest_first[i] != base:
+                    return False
+        elif t == "last_numbers_in":
+            # Ultimas N rodadas com numeros dentro de um conjunto (ex: baixas 1,2,3)
+            if not cond.numbers or cond.count is None:
+                return False
+            if len(numbers_newest_first) < cond.count:
+                return False
+            for i in range(cond.count):
+                if numbers_newest_first[i] not in cond.numbers:
+                    return False
+        elif t == "last_number_eq_and_streak":
+            # Combo: ultima pedra == X E sequencia anterior de N cores iguais
+            # Usa cond.number + cond.color + cond.value (streak entre rodadas 1..value)
+            if cond.number is None or last_number is None:
+                return False
+            if last_number != cond.number:
+                return False
+            if not cond.color or cond.value is None:
+                return False
+            # Conta streak da cor a partir da rodada 1 (ignorando a 0 que é a pedra gatilho)
+            if len(colors_newest_first) < cond.value + 1:
+                return False
+            for i in range(1, cond.value + 1):
+                if colors_newest_first[i] != cond.color:
+                    return False
         else:
             return False
     return True
@@ -1064,6 +1273,219 @@ async def create_rule(r: RuleIn):
     obj = Rule(**r.model_dump())
     await db.rules.insert_one(obj.model_dump())
     return obj
+
+
+# ---------------- Pedras Pagadoras: seed das regras das imagens ----------------
+PEDRAS_SEED_TAG = "pedras_v2"
+
+
+def _pedras_pagadoras_rules() -> List[Rule]:
+    """Regras built-in derivadas das imagens (Pedras Pagadoras + Fluxo + Combos)."""
+    rules: List[Rule] = []
+    base_kwargs = {"enabled": True}
+
+    # 1. PEDRA 12 ou 14 + 4 PRETOS/VERMELHOS seguidos -> BRANCO (combo elite)
+    rules.append(Rule(
+        name="🔥 Combo: 12/14 após 4 pretos seguidos → BRANCO",
+        priority=100,
+        conditions=[
+            RuleCondition(type="last_number_in", numbers=[12, 14]),
+            RuleCondition(type="last_n_pattern", pattern=[]),
+        ],
+        # condicao alternativa via last_number_eq_and_streak
+        action=RuleAction(color="white", gales=2, note="Confluência máxima: gatilho elite após sequência longa de preto."),
+        **base_kwargs,
+    ))
+    # Para "12/14 após 4 pretos" usamos last_number_eq_and_streak
+    rules[-1].conditions = [
+        RuleCondition(type="last_number_eq_and_streak", number=12, color="black", value=4),
+    ]
+    rules.append(Rule(
+        name="🔥 Combo: 14 após 4 pretos seguidos → BRANCO",
+        priority=100,
+        conditions=[
+            RuleCondition(type="last_number_eq_and_streak", number=14, color="black", value=4),
+        ],
+        action=RuleAction(color="white", gales=2, note="Confluência máxima: gatilho elite após sequência longa de preto."),
+        **base_kwargs,
+    ))
+    rules.append(Rule(
+        name="🔥 Combo: 12 após 4 vermelhos seguidos → BRANCO",
+        priority=100,
+        conditions=[
+            RuleCondition(type="last_number_eq_and_streak", number=12, color="red", value=4),
+        ],
+        action=RuleAction(color="white", gales=2, note="Confluência máxima: gatilho elite após sequência longa de vermelho."),
+        **base_kwargs,
+    ))
+    rules.append(Rule(
+        name="🔥 Combo: 14 após 4 vermelhos seguidos → BRANCO",
+        priority=100,
+        conditions=[
+            RuleCondition(type="last_number_eq_and_streak", number=14, color="red", value=4),
+        ],
+        action=RuleAction(color="white", gales=2, note="Confluência máxima: gatilho elite após sequência longa de vermelho."),
+        **base_kwargs,
+    ))
+
+    # 2. Pedras Gêmeas (duas iguais seguidas) -> BRANCO
+    rules.append(Rule(
+        name="👯 Pedras Gêmeas → BRANCO",
+        priority=85,
+        conditions=[
+            RuleCondition(type="twin_numbers", count=2),
+        ],
+        action=RuleAction(color="white", gales=2, note="Duplicação de payout: grade carregada, branco vem quebrar."),
+        **base_kwargs,
+    ))
+
+    # 3. Pedra 12 ou 14 -> BRANCO (gatilho elite)
+    rules.append(Rule(
+        name="🎯 Pedra 12 (Gatilho Elite) → BRANCO",
+        priority=70,
+        conditions=[
+            RuleCondition(type="last_number_eq", number=12),
+        ],
+        action=RuleAction(color="white", gales=2, note="Gatilho de elite: 95% chance de branco nas próximas 3 rodadas."),
+        **base_kwargs,
+    ))
+    rules.append(Rule(
+        name="🎯 Pedra 14 (Gatilho Elite) → BRANCO",
+        priority=70,
+        conditions=[
+            RuleCondition(type="last_number_eq", number=14),
+        ],
+        action=RuleAction(color="white", gales=2, note="Gatilho de elite: 95% chance de branco nas próximas 3 rodadas."),
+        **base_kwargs,
+    ))
+
+    # 4. Pedra 13 -> BRANCO (puxador de vácuo)
+    rules.append(Rule(
+        name="🌀 Pedra 13 (Puxador de Vácuo) → BRANCO",
+        priority=65,
+        conditions=[
+            RuleCondition(type="last_number_eq", number=13),
+        ],
+        action=RuleAction(color="white", gales=2, note="Sistema busca branco em minutos espelho."),
+        **base_kwargs,
+    ))
+
+    # 5. Pedras 7 ou 9 -> BRANCO (fim de ciclo)
+    rules.append(Rule(
+        name="🪞 Pedra 7 ou 9 (Espelho/Fim de Ciclo) → BRANCO",
+        priority=55,
+        conditions=[
+            RuleCondition(type="last_number_in", numbers=[7, 9]),
+        ],
+        action=RuleAction(color="white", gales=2, note="Fim de ciclo: sistema busca compensação."),
+        **base_kwargs,
+    ))
+
+    # 6. Pedras Baixas seguidas (3x 1/2/3) -> BLOQUEIO (resfriamento)
+    rules.append(Rule(
+        name="❄️ Pedras Baixas (3x 1/2/3) → NÃO ENTRAR",
+        priority=90,
+        conditions=[
+            RuleCondition(type="last_numbers_in", numbers=[1, 2, 3], count=3),
+        ],
+        action=RuleAction(color="white", gales=0, skip=True,
+                          note="Resfriamento: grade economizando. Aguardar gatilho 12/13/14."),
+        **base_kwargs,
+    ))
+
+    # 7. Fluxo Surfe de Cor (5+ mesma cor não-branca) -> continua mesma cor
+    rules.append(Rule(
+        name="🏄 Surfe de Cor (5+ vermelhos) → VERMELHO",
+        priority=40,
+        conditions=[
+            RuleCondition(type="streak", color="red", op=">=", value=5),
+        ],
+        action=RuleAction(color="red", gales=1, note="Surfe pós-branco/REC: siga a tendência."),
+        **base_kwargs,
+    ))
+    rules.append(Rule(
+        name="🏄 Surfe de Cor (5+ pretos) → PRETO",
+        priority=40,
+        conditions=[
+            RuleCondition(type="streak", color="black", op=">=", value=5),
+        ],
+        action=RuleAction(color="black", gales=1, note="Surfe pós-branco/REC: siga a tendência."),
+        **base_kwargs,
+    ))
+
+    # 8. Quebra de xadrez longo (V-P-V-P-V-P) -> aposta na continuidade
+    rules.append(Rule(
+        name="♟️ Xadrez longo após 6 alternâncias → quebra (PRETO)",
+        priority=35,
+        conditions=[
+            RuleCondition(type="last_n_pattern",
+                          pattern=["red", "black", "red", "black", "red", "black"]),
+        ],
+        action=RuleAction(color="black", gales=1, note="Sistema tende a quebrar xadrez na 6ª."),
+        **base_kwargs,
+    ))
+    rules.append(Rule(
+        name="♟️ Xadrez longo após 6 alternâncias → quebra (VERMELHO)",
+        priority=35,
+        conditions=[
+            RuleCondition(type="last_n_pattern",
+                          pattern=["black", "red", "black", "red", "black", "red"]),
+        ],
+        action=RuleAction(color="red", gales=1, note="Sistema tende a quebrar xadrez na 6ª."),
+        **base_kwargs,
+    ))
+
+    # 9. Dobradinha V-V-P-P -> próximo par (V-V)
+    rules.append(Rule(
+        name="🎲 Dobradinha P-P após V-V → VERMELHO",
+        priority=30,
+        conditions=[
+            RuleCondition(type="last_n_pattern", pattern=["black", "black", "red", "red"]),
+        ],
+        action=RuleAction(color="red", gales=1, note="Padrão V-V-P-P: próximo par tende a inverter."),
+        **base_kwargs,
+    ))
+    rules.append(Rule(
+        name="🎲 Dobradinha V-V após P-P → PRETO",
+        priority=30,
+        conditions=[
+            RuleCondition(type="last_n_pattern", pattern=["red", "red", "black", "black"]),
+        ],
+        action=RuleAction(color="black", gales=1, note="Padrão P-P-V-V: próximo par tende a inverter."),
+        **base_kwargs,
+    ))
+
+    # marca tag interna em todas
+    for r in rules:
+        r.id = str(uuid.uuid4())
+    return rules
+
+
+@api_router.post("/rules/seed-pedras")
+async def seed_pedras_rules(replace: bool = False):
+    """Cria/atualiza as regras das Pedras Pagadoras (mentoria das imagens).
+    Se replace=True, apaga primeiro todas as regras com a tag e recria.
+    """
+    new_rules = _pedras_pagadoras_rules()
+    new_names = {r.name for r in new_rules}
+    inserted = 0
+    updated = 0
+    if replace:
+        await db.rules.delete_many({"name": {"$in": list(new_names)}})
+    for r in new_rules:
+        existing = await db.rules.find_one({"name": r.name}, {"_id": 0})
+        if existing:
+            if replace:
+                await db.rules.delete_one({"name": r.name})
+                await db.rules.insert_one(r.model_dump())
+                inserted += 1
+            else:
+                # mantem existente (nao sobrescreve preferencias do usuario)
+                updated += 1
+        else:
+            await db.rules.insert_one(r.model_dump())
+            inserted += 1
+    return {"inserted": inserted, "skipped_existing": updated, "total_seed": len(new_rules)}
 
 
 @api_router.get("/rules", response_model=List[Rule])
@@ -1098,13 +1520,14 @@ async def evaluate_rules(source: Optional[SourceLiteral] = None, window: int = 3
     cursor = db.rounds.find(q, {"_id": 0}).sort("captured_at", -1).limit(window)
     rounds_docs = await cursor.to_list(length=window)
     colors = [d["color"] for d in rounds_docs]  # newest first
+    numbers = [d["number"] for d in rounds_docs]
     if not colors:
         return RuleMatch(matched=False, reason="Sem rodadas no histórico.")
 
     rules_docs = await db.rules.find({"enabled": True}, {"_id": 0}).sort("priority", -1).to_list(length=500)
     for rd in rules_docs:
         rule = Rule(**rd)
-        if _eval_rule(rule, colors):
+        if _eval_rule(rule, colors, numbers):
             return RuleMatch(matched=True, rule=rule, reason=f"Regra '{rule.name}' casou.")
     return RuleMatch(matched=False, reason="Nenhuma regra ativa casou com o estado atual.")
 

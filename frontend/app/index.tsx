@@ -174,27 +174,27 @@ export default function CaptureScreen() {
 
   const current = SITES.find((s) => s.key === activeSite)!;
 
-  // Auto-coleta: a cada 15s injeta o scraper sem mostrar alertas.
-  // A cada 20 ciclos (~5min) recarrega a página para forçar dados frescos.
+  // Auto-coleta: a cada 8s injeta o scraper sem mostrar alertas.
+  // A cada 30 ciclos (~4min) recarrega a página para forçar dados frescos.
   useEffect(() => {
     if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null; }
     autoTickCount.current = 0;
     if (autoCollect && Platform.OS !== "web") {
       autoRef.current = setInterval(() => {
         autoTickCount.current += 1;
-        if (autoTickCount.current % 20 === 0) {
-          // recarrega a página a cada ~5 minutos
+        if (autoTickCount.current % 30 === 0) {
+          // recarrega a página a cada ~4 minutos
           webRef.current?.reload();
           // aguarda um pouco antes de tentar coletar de novo
           setTimeout(() => {
             webRef.current?.injectJavaScript(INJECTED_SCRAPER);
             setLastAutoAt(Date.now());
-          }, 4000);
+          }, 3500);
         } else {
           webRef.current?.injectJavaScript(INJECTED_SCRAPER);
           setLastAutoAt(Date.now());
         }
-      }, 15000);
+      }, 8000);
     }
     return () => {
       if (autoRef.current) clearInterval(autoRef.current);
@@ -319,7 +319,7 @@ export default function CaptureScreen() {
       {autoCollect && (
         <View style={styles.autoBanner} testID="auto-banner">
           <Text style={styles.autoBannerText}>
-            ⚡ Auto-coleta ATIVA (15s) · {sessionInserted} inseridas nesta sessão
+            ⚡ Auto-coleta ATIVA (8s) · {sessionInserted} inseridas nesta sessão
             {lastAutoAt ? ` · ${new Date(lastAutoAt).toLocaleTimeString("pt-BR")}` : ""}
           </Text>
         </View>

@@ -317,6 +317,37 @@ export async function clearActivePredictionHistory(): Promise<{ deleted: number 
   return res.json();
 }
 
+export interface WhiteForecastTarget {
+  time_str: string;
+  minutes_ahead: number;
+  rationale: string;
+  type: "sniper_short" | "elite_long" | "soma_rastro" | "soma_rastro_double";
+  confidence: number;
+}
+
+export interface WhiteForecast {
+  last_white_time: string | null;
+  last_white_terminal: number | null;
+  mirror_terminal: number | null;
+  next_stone_after_white: number | null;
+  targets: WhiteForecastTarget[];
+  notes: string | null;
+}
+
+export async function getWhiteForecast(source?: SourceType): Promise<WhiteForecast> {
+  const p = new URLSearchParams();
+  if (source) p.append("source", source);
+  const res = await fetch(`${API_BASE}/white-forecast?${p}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function seedPedrasRules(replace = false): Promise<{ inserted: number; skipped_existing: number; total_seed: number }> {
+  const res = await fetch(`${API_BASE}/rules/seed-pedras?replace=${replace}`, { method: "POST" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export const COLOR_HEX: Record<ColorType, string> = {
   red: "#E11D2A",
   black: "#1a1a1a",

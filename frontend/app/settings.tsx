@@ -10,15 +10,7 @@ import {
   Switch,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
-import {
-  clearRounds,
-  listRounds,
-  SourceType,
-  COLOR_HEX,
-  UserSettings,
-  getSettings,
-  updateSettings,
-} from "../src/api";
+import { clearRounds, listRounds, SourceType, COLOR_HEX, UserSettings, getSettings, updateSettings, seedPedrasRules } from "../src/api";
 
 export default function SettingsScreen() {
   const [counts, setCounts] = useState<{ all: number; tipminer: number; megatroia: number; blaze: number }>({
@@ -214,10 +206,55 @@ export default function SettingsScreen() {
         )}
       </View>
 
-      <View style={styles.card}>
+      <View style={styles.card} testID="rules-seed-card">
         <View style={styles.headerRow}>
-          <Text style={styles.headerEmoji}>💾</Text>
-          <Text style={styles.cardTitle}>Rodadas armazenadas</Text>
+          <Text style={styles.headerEmoji}>🎯</Text>
+          <Text style={styles.cardTitle}>Regras das Pedras Pagadoras</Text>
+        </View>
+        <Text style={styles.helpText}>
+          Carrega o pacote de regras das mentorias (Pedras 12/14, 13, Gêmeas, Baixas, 7/9, Combos
+          e Fluxo de Cores). Use &quot;Recriar&quot; para forçar reset das regras built-in.
+        </Text>
+        <TouchableOpacity
+          style={[styles.action, { backgroundColor: "#1f7a47" }]}
+          onPress={async () => {
+            try {
+              const r = await seedPedrasRules(false);
+              Alert.alert("Regras carregadas", `Adicionadas: ${r.inserted}\nJá existiam: ${r.skipped_existing}\nTotal: ${r.total_seed}`);
+            } catch (e: any) {
+              Alert.alert("Erro", e?.message || "Falha");
+            }
+          }}
+          testID="seed-rules-btn"
+        >
+          <Text style={styles.actionText}>📥 Carregar regras (mantém customizações)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.action, { backgroundColor: "#7a1f1f", marginTop: 8 }]}
+          onPress={() =>
+            Alert.alert("Recriar regras?", "Vai apagar e recriar as regras built-in das Pedras Pagadoras. Regras customizadas suas (com outros nomes) serão mantidas.", [
+              { text: "Cancelar", style: "cancel" },
+              {
+                text: "Recriar",
+                style: "destructive",
+                onPress: async () => {
+                  try {
+                    const r = await seedPedrasRules(true);
+                    Alert.alert("Regras recriadas", `Recriadas: ${r.inserted}\nTotal: ${r.total_seed}`);
+                  } catch (e: any) {
+                    Alert.alert("Erro", e?.message || "Falha");
+                  }
+                },
+              },
+            ])
+          }
+          testID="reseed-rules-btn"
+        >
+          <Text style={styles.actionText}>🔄 Recriar regras (forçar reset)</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.card}>
         </View>
         {loading ? (
           <ActivityIndicator color="#FF1F1F" style={{ marginVertical: 14 }} />
@@ -370,6 +407,13 @@ const styles = StyleSheet.create({
   },
   dangerBtnSolid: { backgroundColor: "#E11D2A", borderColor: "#E11D2A" },
   dangerText: { color: "#FF1F1F", fontWeight: "800", fontSize: 13 },
+  action: {
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionText: { color: "#fff", fontWeight: "800", fontSize: 13 },
   helpText: { color: "#bbb", fontSize: 13, lineHeight: 20, marginBottom: 6 },
   bold: { color: "#fff", fontWeight: "800" },
   fieldLabel: { color: "#fff", fontWeight: "700", fontSize: 13, marginBottom: 2 },
