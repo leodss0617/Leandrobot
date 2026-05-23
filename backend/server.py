@@ -4,12 +4,15 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import uuid
 from datetime import datetime, timezone, timedelta
 from collections import Counter
+import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 
 ROOT_DIR = Path(__file__).parent
@@ -757,6 +760,224 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ---------------- Background Poller (24/7 collection) ----------------
+BLAZE_API_URLS = [
+    "https://blaze.bet.br/api/roulette_games/recent",
+    "https://blaze-1.com/api/roulette_games/recent",
+    "https://blaze.com/api/roulette_games/recent",
+]
+
+
+def _normalize_blaze_item(item: dict) -> Optional[dict]:
+    """Normaliza um item retornado pelas APIs publicas da Blaze.
+    Espera campos: roll (0-14), color (0=white,1=red,2=black) ou string,
+    created_at (ISO timestamp)."""
+    try:
+        roll = item.get("roll")
+        if roll is None:
+            roll = item.get("number")
+        if roll is None:
+            return None
+        roll = int(roll)
+        if not (0 <= roll <= 14):
+            return None
+        # color
+        raw_color = item.get("color")
+        if isinstance(raw_color, int):
+            color_map = {0: "white", 1: "red", 2: "black"}
+            color = color_map.get(raw_color, color_for_number(roll))
+        elif isinstance(raw_color, str) and raw_color.lower() in ("white", "red", "black"):
+            color = raw_color.lower()
+        else:
+            color = color_for_number(roll)
+        ts = item.get("created_at") or item.get("createdAt") or item.get("timestamp")
+        time_str = None
+        seconds = None
+        site_ts = None
+        if ts:
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                time_str = dt.strftime("%H:%M")
+                seconds = dt.strftime("%S")
+                site_ts = str(ts)
+            except Exception:
+                site_ts = str(ts)
+        return {
+            "number": roll,
+            "color": color,
+            "time_str": time_str,
+            "seconds": seconds,
+            "site_ts": site_ts,
+        }
+    except Exception:
+        return None
+
+
+async def poll_blaze():
+    """Roda a cada 60s: consulta a API publica da Blaze e insere rodadas novas."""
+    items = None
+    last_err = None
+    async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+        for url in BLAZE_API_URLS:
+            try:
+                r = await client.get(url)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and data:
+                        items = data
+                        break
+                    if isinstance(data, dict) and isinstance(data.get("data"), list):
+                        items = data["data"]
+                        break
+            except Exception as e:
+                last_err = e
+                continue
+    if not items:
+        logger.debug(f"poll_blaze: nenhuma API respondeu ({last_err})")
+        return
+    inserted = 0
+    duplicates = 0
+    for it in items:
+        norm = _normalize_blaze_item(it)
+        if not norm:
+            continue
+        dedupe = {
+            "source": "blaze",
+            "number": norm["number"],
+            "time_str": norm["time_str"],
+            "seconds": norm["seconds"],
+        }
+        existing = await db.rounds.find_one(dedupe, {"_id": 0, "id": 1})
+        if existing:
+            duplicates += 1
+            continue
+        obj = Round(
+            number=norm["number"],
+            color=norm["color"],  # type: ignore
+            source="blaze",
+            time_str=norm["time_str"],
+            seconds=norm["seconds"],
+            site_ts=norm["site_ts"],
+        )
+        await db.rounds.insert_one(obj.model_dump())
+        inserted += 1
+    if inserted:
+        logger.info(f"poll_blaze: {inserted} novas, {duplicates} duplicadas")
+
+
+# Regras default — carregadas no primeiro startup
+DEFAULT_RULES = [
+    {
+        "name": "3 pretos seguidos → Vermelho",
+        "conditions": [{"type": "streak", "color": "black", "op": ">=", "value": 3}],
+        "action": {"color": "red", "gales": 1, "note": "Quebra de sequência de preto"},
+        "priority": 5,
+    },
+    {
+        "name": "3 vermelhos seguidos → Preto",
+        "conditions": [{"type": "streak", "color": "red", "op": ">=", "value": 3}],
+        "action": {"color": "black", "gales": 1, "note": "Quebra de sequência de vermelho"},
+        "priority": 5,
+    },
+    {
+        "name": "4 pretos seguidos → Vermelho (G2)",
+        "conditions": [{"type": "streak", "color": "black", "op": ">=", "value": 4}],
+        "action": {"color": "red", "gales": 2, "note": "Sequência longa de preto"},
+        "priority": 8,
+    },
+    {
+        "name": "4 vermelhos seguidos → Preto (G2)",
+        "conditions": [{"type": "streak", "color": "red", "op": ">=", "value": 4}],
+        "action": {"color": "black", "gales": 2, "note": "Sequência longa de vermelho"},
+        "priority": 8,
+    },
+    {
+        "name": "5+ pretos → Vermelho (G3)",
+        "conditions": [{"type": "streak", "color": "black", "op": ">=", "value": 5}],
+        "action": {"color": "red", "gales": 3, "note": "Sequência extrema"},
+        "priority": 12,
+    },
+    {
+        "name": "5+ vermelhos → Preto (G3)",
+        "conditions": [{"type": "streak", "color": "red", "op": ">=", "value": 5}],
+        "action": {"color": "black", "gales": 3, "note": "Sequência extrema"},
+        "priority": 12,
+    },
+    {
+        "name": "Após branco → Vermelho",
+        "conditions": [{"type": "after_color", "color": "white"}],
+        "action": {"color": "red", "gales": 1, "note": "Padrão pós-branco"},
+        "priority": 7,
+    },
+    {
+        "name": "Branco sem cair há 18+ → Apostar Branco",
+        "conditions": [{"type": "gap_white", "op": ">=", "value": 18}],
+        "action": {"color": "white", "gales": 0, "note": "Branco atrasado"},
+        "priority": 10,
+    },
+    {
+        "name": "Branco sem cair há 25+ → Branco (alta confiança)",
+        "conditions": [{"type": "gap_white", "op": ">=", "value": 25}],
+        "action": {"color": "white", "gales": 0, "note": "Branco MUITO atrasado"},
+        "priority": 15,
+    },
+    {
+        "name": "Padrão V-P-V-P → Vermelho",
+        "conditions": [{"type": "last_n_pattern", "pattern": ["black", "red", "black", "red"]}],
+        "action": {"color": "red", "gales": 1, "note": "Alternância detectada"},
+        "priority": 6,
+    },
+    {
+        "name": "Padrão P-V-P-V → Preto",
+        "conditions": [{"type": "last_n_pattern", "pattern": ["red", "black", "red", "black"]}],
+        "action": {"color": "black", "gales": 1, "note": "Alternância detectada"},
+        "priority": 6,
+    },
+]
+
+
+async def seed_default_rules():
+    """Insere regras default se nenhuma regra existir ainda."""
+    count = await db.rules.count_documents({})
+    if count > 0:
+        return
+    for r in DEFAULT_RULES:
+        obj = Rule(
+            name=r["name"],
+            enabled=True,
+            conditions=[RuleCondition(**c) for c in r["conditions"]],
+            action=RuleAction(**r["action"]),
+            priority=r["priority"],
+        )
+        await db.rules.insert_one(obj.model_dump())
+    logger.info(f"seed_default_rules: {len(DEFAULT_RULES)} regras inseridas")
+
+
+scheduler = AsyncIOScheduler()
+
+
+@app.on_event("startup")
+async def on_startup():
+    try:
+        await seed_default_rules()
+    except Exception as e:
+        logger.warning(f"seed_default_rules failed: {e}")
+    try:
+        # Roda a cada 60s e tambem agora
+        scheduler.add_job(poll_blaze, "interval", seconds=60, id="poll_blaze",
+                          replace_existing=True, max_instances=1, coalesce=True)
+        scheduler.start()
+        # Executa um primeiro poll em background
+        asyncio.create_task(poll_blaze())
+        logger.info("Background poller iniciado (Blaze, intervalo 60s)")
+    except Exception as e:
+        logger.warning(f"scheduler start failed: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     client.close()
