@@ -161,7 +161,7 @@ class UserSettings(BaseModel):
     max_gales: int = 2
     preferred_source: SourceLiteral = "blaze"
     auto_predict: bool = True  # Ligado por padrão
-    skip_white_predictions: bool = False  # se True, ignora previsoes de branco
+    skip_white_predictions: bool = True  # padrao: ignora previsoes de branco (vira alerta separado)
 
 
 # ---------------- Active Prediction (single, with gale chain) ----------------
@@ -969,6 +969,9 @@ async def _generate_active_prediction(source: SourceLiteral, max_gales: int,
                         f"{rule.action.note or ''}"
                     )
                     break
+                # Se skip_white esta ligado, IGNORA regras de branco (vao virar alerta separado)
+                if skip_white and rule.action.color == "white":
+                    continue
                 rule_name = rule.name
                 pred_color = rule.action.color
                 rationale = f"Regra '{rule.name}'" + (f" - {rule.action.note}" if rule.action.note else "")
@@ -1991,6 +1994,15 @@ async def on_startup():
         await seed_default_rules()
     except Exception as e:
         logger.warning(f"seed_default_rules failed: {e}")
+    try:
+        # Migracao: forca skip_white_predictions=True por padrao (branco vira alerta separado)
+        await db.settings.update_one(
+            {"key": SETTINGS_KEY},
+            {"$set": {"skip_white_predictions": True}},
+            upsert=False,
+        )
+    except Exception as e:
+        logger.warning(f"settings migration failed: {e}")
     try:
         # Roda a cada 30s e tambem agora
         scheduler.add_job(poll_blaze, "interval", seconds=30, id="poll_blaze",

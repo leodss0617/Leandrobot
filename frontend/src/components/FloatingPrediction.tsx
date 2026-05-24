@@ -59,9 +59,9 @@ export function FloatingPrediction() {
     }),
   ).current;
 
-  // Verifica se tem previsão de red/white válida
+  // Verifica se tem previsão de red/black válida (BRANCO vai para FloatingWhiteAlert separado)
   const candidateColor = match?.matched && match.rule ? match.rule.action.color : pred?.next_color;
-  const hasPrediction = candidateColor === "red" || candidateColor === "white";
+  const hasPrediction = candidateColor === "red" || candidateColor === "black";
 
   if (!visible) {
     if (!hasPrediction) return null; // não mostra botão se não tem previsão útil
@@ -82,8 +82,8 @@ export function FloatingPrediction() {
   const isRule = !!ruleAction;
   const isWhite = showColor === "white";
 
-  // Só exibe se a previsão for VERMELHO ou BRANCO (Preto é ignorado)
-  if (showColor !== "red" && showColor !== "white") return null;
+  // Só exibe se a previsão for VERMELHO ou PRETO (Branco vai para FloatingWhiteAlert)
+  if (showColor !== "red" && showColor !== "black") return null;
 
   return (
     <Animated.View

@@ -8,6 +8,7 @@ import { DrawerContentScrollView, DrawerItemList } from "@react-navigation/drawe
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { LinearGradient } from "expo-linear-gradient";
 import { FloatingPrediction } from "../src/components/FloatingPrediction";
+import FloatingWhiteAlert from "../src/components/FloatingWhiteAlert";
 import { BackgroundCollector } from "../src/components/BackgroundCollector";
 import { bootstrapBotService } from "../src/services/botService";
 
@@ -168,6 +169,7 @@ export default function RootLayout() {
           </Drawer>
           <BackgroundCollector />
           <FloatingPrediction />
+          <FloatingWhiteAlert />
         </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>

@@ -19,6 +19,7 @@ import {
   UserSettings,
   PredictionStats,
   PollStatus,
+  WhiteAlert,
   getActivePrediction,
   createActivePrediction,
   cancelActivePrediction,
@@ -27,6 +28,7 @@ import {
   getSettings,
   getPredictionsStats,
   getPollStatus,
+  getWhiteAlert,
   listRounds,
   Round,
   COLOR_HEX,
@@ -54,6 +56,7 @@ export default function BotScreen() {
   const [stats, setStats] = useState<PredictionStats | null>(null);
   const [recent, setRecent] = useState<Round[]>([]);
   const [pollStatus, setPollStatus] = useState<PollStatus | null>(null);
+  const [whiteAlert, setWhiteAlert] = useState<WhiteAlert | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -80,6 +83,7 @@ export default function BotScreen() {
     try { setStats(await getPredictionsStats()); } catch { setStats(null); }
     try { setRecent(await listRounds(undefined, 10)); } catch { setRecent([]); }
     try { setPollStatus(await getPollStatus()); } catch { setPollStatus(null); }
+    try { setWhiteAlert(await getWhiteAlert()); } catch { setWhiteAlert(null); }
     setLoading(false);
   }, []);
 
@@ -304,6 +308,35 @@ export default function BotScreen() {
           </Text>
         )}
       </LinearGradient>
+
+      {/* Alerta de Branco - SEPARADO da previsao Vermelho/Preto */}
+      {whiteAlert?.active && (
+        <LinearGradient
+          colors={["#1c1814", "#100c0a"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.whiteAlertCard}
+        >
+          <View style={styles.whiteAlertRow}>
+            <View style={styles.whiteBallBig}>
+              <Text style={{ fontSize: 24, fontWeight: "900", color: "#111" }}>B</Text>
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={styles.whiteAlertTitle}>⚪ ALERTA DE BRANCO</Text>
+              <Text style={styles.whiteAlertRule}>{whiteAlert.rule_name || "Padrão detectado"}</Text>
+              {whiteAlert.suggested_target?.time_str && (
+                <Text style={styles.whiteAlertTarget}>
+                  🕐 Alvo: {whiteAlert.suggested_target.time_str}
+                  {whiteAlert.confidence ? ` · ${Math.round(whiteAlert.confidence)}% confiança` : ""}
+                </Text>
+              )}
+            </View>
+          </View>
+          {whiteAlert.rationale && (
+            <Text style={styles.whiteAlertText}>{whiteAlert.rationale}</Text>
+          )}
+        </LinearGradient>
+      )}
 
       {/* Background Service Toggle */}
       <View style={styles.serviceCard}>
@@ -847,4 +880,28 @@ const styles = StyleSheet.create({
   historyTitle: { color: "#fff", fontWeight: "800", fontSize: 13 },
   historySub: { color: "#7a7a7a", fontSize: 10, marginTop: 2, fontStyle: "italic" },
   historyTime: { color: "#7a7a7a", fontSize: 11, fontWeight: "700" },
+
+  // White alert
+  whiteAlertCard: {
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.4)",
+  },
+  whiteAlertRow: { flexDirection: "row", alignItems: "center" },
+  whiteBallBig: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#bbb",
+  },
+  whiteAlertTitle: { color: "#fff", fontWeight: "900", fontSize: 16, letterSpacing: 0.5 },
+  whiteAlertRule: { color: "#FFD700", fontSize: 12, fontWeight: "800", marginTop: 3 },
+  whiteAlertTarget: { color: "#86efac", fontSize: 12, fontWeight: "700", marginTop: 3 },
+  whiteAlertText: { color: "#c9c9c9", fontSize: 11, fontStyle: "italic", marginTop: 10, lineHeight: 15 },
 });

@@ -288,24 +288,30 @@ export async function isBotServiceEnabled(): Promise<boolean> {
 }
 
 /**
- * Called from `_layout.tsx` on app startup. If the user previously enabled the
- * service, make sure it is registered (Android may have unregistered it).
+ * Called from `_layout.tsx` on app startup. Registra automaticamente o servico
+ * de background (sem precisar do usuario ativar manualmente).
  */
 export async function bootstrapBotService(): Promise<void> {
   try {
-    const v = await AsyncStorage.getItem(SERVICE_ENABLED_KEY);
-    if (v === "1") {
-      await ensurePermissionsAndChannel();
-      const registered = await TaskManager.isTaskRegisteredAsync(BOT_TASK);
-      if (!registered) {
+    // Tenta solicitar permissoes e registrar a task de forma automatica
+    await ensurePermissionsAndChannel();
+    const registered = await TaskManager.isTaskRegisteredAsync(BOT_TASK);
+    if (!registered) {
+      try {
         await BackgroundFetch.registerTaskAsync(BOT_TASK, {
           minimumInterval: 60 * 15,
           stopOnTerminate: false,
           startOnBoot: true,
         });
+        await AsyncStorage.setItem(SERVICE_ENABLED_KEY, "1");
+      } catch (e) {
+        console.warn("auto-register background fetch failed", e);
       }
-      tickAndNotify().catch(() => {});
+    } else {
+      await AsyncStorage.setItem(SERVICE_ENABLED_KEY, "1");
     }
+    // Sempre dispara um tick na inicializacao para verificar estado atual
+    tickAndNotify().catch(() => {});
   } catch (e) {
     console.warn("bootstrapBotService", e);
   }
