@@ -379,3 +379,34 @@ agent_communication:
         * Predicted color is still white as expected
       
       All Bot v3 backend features are fully functional and ready for production use.
+
+
+## agent_communication:
+    -agent: "main"
+    -message: |
+      **Refactoring + Foreground Service (EAS Build)**
+      
+      Changes:
+      1. UI redesign: hero card with gradients (LinearGradient), new drawer header with brand badge,
+         polished cards for placar/historico/recentes, gradient buttons, new pollPill, statusPill
+         and gale-track styling.
+      2. Background service: created /app/frontend/src/services/botService.ts using
+         expo-task-manager + expo-background-fetch. WorkManager registration survives reboot
+         automatically (startOnBoot: true). Sticky ongoing notification while service is on.
+         Local notifications on HIT, LOSS, new PENDING, gale advance and white alert.
+      3. New "Ativar serviço em background" toggle on the Bot screen (testID: bot-service-switch).
+      4. _layout.tsx now calls bootstrapBotService() on app start to re-register tasks if user
+         had enabled them previously.
+      5. app.json: added bundle/package (com.leandro.bot), Android permissions
+         (FOREGROUND_SERVICE, FOREGROUND_SERVICE_DATA_SYNC, WAKE_LOCK, POST_NOTIFICATIONS,
+         RECEIVE_BOOT_COMPLETED, VIBRATE, SCHEDULE_EXACT_ALARM), iOS UIBackgroundModes
+         (fetch + remote-notification), plugins expo-notifications + expo-background-fetch.
+      6. eas.json created at /app/eas.json AND /app/frontend/eas.json with development/preview/production
+         build profiles (apk + app-bundle) and EXPO_PUBLIC_BACKEND_URL passthrough.
+      7. New packages installed: expo-notifications, expo-task-manager, expo-background-fetch,
+         expo-device (via `npx expo install`, SDK-compatible versions).
+      
+      Notes for testing:
+      - Foreground notifications only work on real EAS Build (APK/AAB). On web/Expo Go preview,
+        toggle works but no actual native notification will appear.
+      - No backend changes were required.

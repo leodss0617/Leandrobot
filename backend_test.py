@@ -9,7 +9,7 @@ import json
 from typing import Dict, Any, List, Optional
 
 # Base URL from review request
-BASE_URL = "https://bot-repertoire.preview.emergentagent.com/api"
+BASE_URL = "https://eloquent-cray-7.preview.emergentagent.com/api"
 
 class TestResult:
     def __init__(self):
