@@ -407,6 +407,37 @@ agent_communication:
          expo-device (via `npx expo install`, SDK-compatible versions).
       
       Notes for testing:
+
+## Bug Fixes (User feedback)
+    -agent: "main"
+    -message: |
+      Bugs corrigidos a partir do feedback do usuario (screenshots de app real):
+      
+      1. **Regras "Branco sem cair" com gales=0** → fix: gales=2 (18+) e gales=3 (25+).
+         Tambem adicionei migracao no `seed_default_rules()` que atualiza regras existentes
+         no banco para o novo valor de gales (alem de novas insercoes).
+      
+      2. **FloatingPrediction mostrava previsoes de PRETO** → fix: agora so renderiza
+         se a previsao for VERMELHO ou BRANCO. Caso contrario, retorna null e o botao
+         flutuante de reabertura tambem nao aparece.
+      
+      3. **Coleta automatica nao funcionava em outras telas** → fix: criado
+         `src/components/BackgroundCollector.tsx`. Uma WebView 1x1px oculta montada no
+         _layout.tsx que continua coletando rodadas em todas as telas (Bot, Stats, etc).
+         Recarrega a pagina a cada ~3min, injeta scraper a cada 10s, retoma quando o app
+         volta ao foreground. No web/preview retorna null (so funciona em APK).
+      
+      4. **PollStatus sempre mostrava blocked** (Blaze geo-bloqueia o servidor com 451)
+         → fix: quando o app envia rounds via `/api/rounds/bulk`, atualizamos
+         `_poll_status` para "ok" com timestamp. Assim a UI mostra "LIVE" verde
+         quando o BackgroundCollector esta enviando dados.
+      
+      Como funciona "ligo o celular e ja funciona":
+      - bootstrapBotService() no _layout.tsx reactiva o servico de notificacoes ao abrir
+      - BackgroundCollector inicia sozinho assim que o layout monta
+      - Quando usuario habilita "Servico em background" (Bot tab), o WorkManager nativo
+        re-registra a task apos reboot (startOnBoot: true)
+
       - Foreground notifications only work on real EAS Build (APK/AAB). On web/Expo Go preview,
         toggle works but no actual native notification will appear.
       - No backend changes were required.

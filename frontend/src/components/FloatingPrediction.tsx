@@ -59,7 +59,12 @@ export function FloatingPrediction() {
     }),
   ).current;
 
+  // Verifica se tem previsão de red/white válida
+  const candidateColor = match?.matched && match.rule ? match.rule.action.color : pred?.next_color;
+  const hasPrediction = candidateColor === "red" || candidateColor === "white";
+
   if (!visible) {
+    if (!hasPrediction) return null; // não mostra botão se não tem previsão útil
     return (
       <TouchableOpacity
         style={styles.reopenBtn}
@@ -76,6 +81,9 @@ export function FloatingPrediction() {
   const showLabel = ruleAction ? COLOR_LABEL[ruleAction.color] : pred ? COLOR_LABEL[pred.next_color] : "—";
   const isRule = !!ruleAction;
   const isWhite = showColor === "white";
+
+  // Só exibe se a previsão for VERMELHO ou BRANCO (Preto é ignorado)
+  if (showColor !== "red" && showColor !== "white") return null;
 
   return (
     <Animated.View

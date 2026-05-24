@@ -284,6 +284,12 @@ async def add_rounds_bulk(payload: BulkRoundsIn):
     total = await db.rounds.count_documents({})
     # Apos inserir rodadas novas, avalia a previsao pendente (auto-advance)
     if inserted > 0:
+        # Atualiza status do polling com sinal vivo do app (BackgroundCollector)
+        _poll_status["status"] = "ok"
+        _poll_status["blocked"] = False
+        _poll_status["message"] = f"App enviou {inserted} novas via {payload.source}"
+        _poll_status["last_poll_at"] = datetime.now(timezone.utc).isoformat()
+        _poll_status["last_insert_count"] = inserted
         try:
             await _advance_active_prediction()
         except Exception as e:
@@ -1926,13 +1932,13 @@ DEFAULT_RULES = [
     {
         "name": "Branco sem cair há 18+ → Apostar Branco",
         "conditions": [{"type": "gap_white", "op": ">=", "value": 18}],
-        "action": {"color": "white", "gales": 0, "note": "Branco atrasado"},
+        "action": {"color": "white", "gales": 2, "note": "Branco atrasado · até G2"},
         "priority": 10,
     },
     {
         "name": "Branco sem cair há 25+ → Branco (alta confiança)",
         "conditions": [{"type": "gap_white", "op": ">=", "value": 25}],
-        "action": {"color": "white", "gales": 0, "note": "Branco MUITO atrasado"},
+        "action": {"color": "white", "gales": 3, "note": "Branco MUITO atrasado · até G3"},
         "priority": 15,
     },
     {
@@ -1954,6 +1960,15 @@ async def seed_default_rules():
     """Insere regras default se nenhuma regra existir ainda."""
     count = await db.rules.count_documents({})
     if count > 0:
+        # Forca atualizacao dos gales das regras de branco atrasado (bug fix)
+        await db.rules.update_many(
+            {"name": "Branco sem cair há 18+ → Apostar Branco"},
+            {"$set": {"action.gales": 2, "action.note": "Branco atrasado · até G2"}},
+        )
+        await db.rules.update_many(
+            {"name": "Branco sem cair há 25+ → Branco (alta confiança)"},
+            {"$set": {"action.gales": 3, "action.note": "Branco MUITO atrasado · até G3"}},
+        )
         return
     for r in DEFAULT_RULES:
         obj = Rule(
